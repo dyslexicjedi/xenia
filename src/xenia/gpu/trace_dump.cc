@@ -124,16 +124,35 @@ bool TraceDump::Load(const std::filesystem::path& trace_file_path) {
 }
 
 int TraceDump::Run() {
-  BeginHostCapture();
   int frame_index = cvars::trace_dump_frame;
   if (frame_index < 0) {
     frame_index += player_->frame_count();
   }
   frame_index =
       std::max(0, std::min(frame_index, player_->frame_count() - 1));
-  player_->SeekFrame(frame_index);
-  player_->SeekCommand(
-      static_cast<int>(player_->current_frame()->commands.size() - 1));
+
+  // Stream traces contain a full GPU state snapshot only at their beginning.
+  // Replay all preceding frames so EDRAM, shared memory, registers, and the
+  // gamma ramp have the state expected by the requested frame. Capture only
+  // the requested frame to keep host GPU captures focused and reasonably
+  // sized.
+  for (int replay_frame = 0; replay_frame < frame_index; ++replay_frame) {
+    if (replay_frame) {
+      player_->SeekFrame(replay_frame);
+    } else {
+      player_->SeekCommand(
+          static_cast<int>(player_->current_frame()->commands.size() - 1));
+    }
+    player_->WaitOnPlayback();
+  }
+
+  BeginHostCapture();
+  if (frame_index) {
+    player_->SeekFrame(frame_index);
+  } else {
+    player_->SeekCommand(
+        static_cast<int>(player_->current_frame()->commands.size() - 1));
+  }
   player_->WaitOnPlayback();
   EndHostCapture();
 

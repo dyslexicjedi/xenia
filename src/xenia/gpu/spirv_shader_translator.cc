@@ -1381,8 +1381,32 @@ void SpirvShaderTranslator::StartVertexOrTessEvalShaderInMain() {
                               spv::LoopControlDontUnrollMask, uint_vector_temp_);
     builder_->createBranch(&rect_vertex_loop_body);
     builder_->setBuildPoint(&rect_vertex_loop_body);
-    // The OpVariable initializer is only applied on the function entry -
-    // reinitialize the special exports for every guest vertex loop iteration.
+    // The OpVariable initializers are only applied on the function entry, but
+    // each loop iteration emulates an independent guest vertex shader
+    // invocation. Reinitialize all translator-owned per-invocation state.
+    builder_->createStore(builder_->makeBoolConstant(false),
+                          var_main_predicate_);
+    builder_->createStore(const_uint4_0_, var_main_loop_count_);
+    builder_->createStore(const_int_0_, var_main_address_register_);
+    builder_->createStore(const_int4_0_, var_main_loop_address_);
+    builder_->createStore(const_float_0_, var_main_previous_scalar_);
+    builder_->createStore(const_int_0_, var_main_vfetch_address_);
+    builder_->createStore(const_float_0_, var_main_tfetch_lod_);
+    builder_->createStore(const_float3_0_, var_main_tfetch_gradients_h_);
+    builder_->createStore(const_float3_0_, var_main_tfetch_gradients_v_);
+    if (IsMemoryExportUsed()) {
+      builder_->createStore(const_float4_0_, var_main_memexport_address_);
+      builder_->createStore(const_uint_0_,
+                            var_main_memexport_data_written_);
+      uint8_t memexport_eM_remaining = current_shader().memexport_eM_written();
+      uint32_t memexport_eM_index;
+      while (xe::bit_scan_forward(memexport_eM_remaining,
+                                  &memexport_eM_index)) {
+        memexport_eM_remaining &= ~(uint8_t(1) << memexport_eM_index);
+        builder_->createStore(const_float4_0_,
+                              var_main_memexport_data_[memexport_eM_index]);
+      }
+    }
     if (var_main_point_size_edge_flag_kill_vertex_ != spv::NoResult) {
       id_vector_temp_.clear();
       id_vector_temp_.push_back(builder_->makeFloatConstant(-1.0f));

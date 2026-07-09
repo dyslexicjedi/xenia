@@ -34,6 +34,7 @@ function windowed_app_main_files()
     links({
       "AppKit.framework",
       "QuartzCore.framework",
+      "UniformTypeIdentifiers.framework",
     })
   filter({})
 end

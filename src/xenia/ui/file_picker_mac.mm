@@ -10,10 +10,13 @@
 #include "xenia/ui/file_picker.h"
 
 #import <AppKit/AppKit.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
 #include <filesystem>
 #include <string>
 #include <vector>
+
+#include "xenia/base/assert.h"
 
 namespace xe {
 namespace ui {
@@ -26,6 +29,9 @@ class MacFilePicker final : public FilePicker {
 std::unique_ptr<FilePicker> FilePicker::Create() { return std::make_unique<MacFilePicker>(); }
 
 bool MacFilePicker::Show(Window* parent_window) {
+  // Save dialogs are not implemented, matching the Win32 picker.
+  assert_true(mode() == Mode::kOpen);
+
   NSOpenPanel* panel = [NSOpenPanel openPanel];
   [panel setTitle:[NSString stringWithUTF8String:title().c_str()]];
   [panel setAllowsMultipleSelection:multi_selection()];
@@ -33,7 +39,7 @@ bool MacFilePicker::Show(Window* parent_window) {
   [panel setCanChooseDirectories:type() == Type::kDirectory];
 
   if (type() == Type::kFile && !extensions().empty()) {
-    NSMutableArray<NSString*>* allowed_types = [NSMutableArray array];
+    NSMutableArray<UTType*>* allowed_types = [NSMutableArray array];
     for (const auto& extension : extensions()) {
       const std::string& pattern = extension.second;
       size_t start = 0;
@@ -44,7 +50,12 @@ bool MacFilePicker::Show(Window* parent_window) {
           item.erase(0, 2);
         }
         if (!item.empty() && item != "*") {
-          [allowed_types addObject:[NSString stringWithUTF8String:item.c_str()]];
+          UTType* type = [UTType
+              typeWithFilenameExtension:[NSString
+                                            stringWithUTF8String:item.c_str()]];
+          if (type) {
+            [allowed_types addObject:type];
+          }
         }
         if (end == std::string::npos) {
           break;
@@ -53,7 +64,7 @@ bool MacFilePicker::Show(Window* parent_window) {
       }
     }
     if ([allowed_types count]) {
-      [panel setAllowedFileTypes:allowed_types];
+      [panel setAllowedContentTypes:allowed_types];
     }
   }
 

@@ -156,7 +156,7 @@ void* AllocFixed(void* base_address, size_t length,
     // memory uses this to make portions of its already-mapped shared backing
     // readable and writable; replacing that mapping with MAP_FIXED would lose
     // the aliasing, while rejecting it leaves every guest heap inaccessible.
-    if (allocation_type != AllocationType::kReserve) {
+    if (allocation_type == AllocationType::kCommit) {
       void* protect_base = base_address;
       size_t protect_length = length;
       AlignRangeToPage(protect_base, protect_length);
@@ -168,9 +168,9 @@ void* AllocFixed(void* base_address, size_t length,
              strerror(errno));
       return nullptr;
     }
-    // Reserve-only fixed allocations must retain the Windows failure-on-
-    // collision behavior rather than letting Darwin MAP_FIXED clobber a live
-    // mapping.
+    // Reserving fixed allocations (with or without commit) must retain the
+    // Windows failure-on-collision behavior rather than letting Darwin
+    // MAP_FIXED clobber a live mapping.
     return nullptr;
   }
   if (access == PageAccess::kExecuteReadWrite ||

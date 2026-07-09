@@ -28,6 +28,11 @@
 #include "xenia/base/platform.h"
 
 #if XE_PLATFORM_MAC
+#include <mach-o/dyld.h>
+
+#include <climits>
+#include <cstring>
+
 // Darwin off_t is always 64-bit; the transitional LFS64 interfaces don't
 // exist.
 #define off64_t off_t
@@ -55,10 +60,27 @@ std::filesystem::path to_path(const std::u16string_view source) {
 namespace filesystem {
 
 std::filesystem::path GetExecutablePath() {
+#if XE_PLATFORM_MAC
+  // There is no procfs on macOS - ask dyld for the executable path and
+  // resolve symlinks like readlink("/proc/self/exe") would.
+  uint32_t buff_size = 0;
+  _NSGetExecutablePath(nullptr, &buff_size);
+  std::string buff(buff_size, '\0');
+  if (_NSGetExecutablePath(buff.data(), &buff_size) != 0) {
+    return {};
+  }
+  buff.resize(std::strlen(buff.c_str()));
+  char resolved[PATH_MAX];
+  if (realpath(buff.c_str(), resolved)) {
+    return std::string(resolved);
+  }
+  return buff;
+#else
   char buff[FILENAME_MAX] = "";
   readlink("/proc/self/exe", buff, FILENAME_MAX);
   std::string s(buff);
   return s;
+#endif
 }
 
 std::filesystem::path GetExecutableFolder() {
@@ -66,11 +88,15 @@ std::filesystem::path GetExecutableFolder() {
 }
 
 std::filesystem::path GetUserFolder() {
+#if !XE_PLATFORM_MAC
   // get preferred data home
   char* home = std::getenv("XDG_DATA_HOME");
   if (home) {
     return std::string(home);
   }
+#else
+  char* home;
+#endif
 
   // if XDG_DATA_HOME not set, fallback to HOME directory
   home = std::getenv("HOME");
@@ -85,7 +111,11 @@ std::filesystem::path GetUserFolder() {
     home = pw->pw_dir;
   }
 
+#if XE_PLATFORM_MAC
+  return std::filesystem::path(home) / "Library" / "Application Support";
+#else
   return std::filesystem::path(home) / ".local" / "share";
+#endif
 }
 
 FILE* OpenFile(const std::filesystem::path& path, const std::string_view mode) {

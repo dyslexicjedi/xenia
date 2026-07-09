@@ -7,26 +7,48 @@
  ******************************************************************************
  */
 
-#include <cstdlib>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #include <iostream>
 #include <string>
+#include <vector>
 
 #include "xenia/base/system.h"
 
+extern char** environ;
+
 namespace xe {
 
+namespace {
+
+// Runs /usr/bin/open with the given arguments, bypassing the shell so URLs
+// and paths can't inject shell syntax.
+void Open(const std::vector<std::string>& args) {
+  std::vector<char*> argv;
+  argv.push_back(const_cast<char*>("open"));
+  for (const auto& arg : args) {
+    argv.push_back(const_cast<char*>(arg.c_str()));
+  }
+  argv.push_back(nullptr);
+  pid_t pid;
+  if (posix_spawnp(&pid, "open", nullptr, nullptr, argv.data(), environ) ==
+      0) {
+    int status;
+    waitpid(pid, &status, 0);
+  }
+}
+
+}  // namespace
+
 void LaunchWebBrowser(const std::string_view url) {
-  std::string cmd("open \"");
-  cmd.append(url);
-  cmd.append("\"");
-  system(cmd.c_str());
+  Open({std::string(url)});
 }
 
 void LaunchFileExplorer(const std::filesystem::path& path) {
-  std::string cmd("open -R \"");
-  cmd.append(path.string());
-  cmd.append("\"");
-  system(cmd.c_str());
+  // Reveal in Finder.
+  Open({"-R", path.string()});
 }
 
 void ShowSimpleMessageBox(SimpleMessageBoxType type, std::string_view message) {

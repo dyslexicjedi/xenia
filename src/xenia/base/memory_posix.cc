@@ -28,6 +28,11 @@
 #endif
 
 #if XE_PLATFORM_MAC
+#include <libkern/OSCacheControl.h>
+#include <mach/mach.h>
+#include <mach/mach_vm.h>
+#include <pthread.h>
+
 // Darwin off_t is always 64-bit; the transitional LFS64 interfaces don't
 // exist.
 #define ftruncate64 ftruncate
@@ -68,6 +73,34 @@ void AndroidShutdown() {
 size_t page_size() { return getpagesize(); }
 size_t allocation_granularity() { return page_size(); }
 
+#if XE_PLATFORM_MAC
+// Darwin's MAP_FIXED silently replaces existing mappings (including the
+// executable image), and address hints aren't reliably honored even for free
+// ranges - so failing on occupied ranges, as VirtualAlloc/MapViewOfFileEx do
+// on Windows, requires an explicit occupancy query.
+static bool IsRangeFree(void* base_address, size_t length) {
+  mach_vm_address_t address =
+      reinterpret_cast<mach_vm_address_t>(base_address);
+  mach_vm_size_t size = 0;
+  vm_region_basic_info_data_64_t info;
+  mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
+  mach_port_t object_name = MACH_PORT_NULL;
+  kern_return_t result = mach_vm_region(
+      mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64,
+      reinterpret_cast<vm_region_info_t>(&info), &info_count, &object_name);
+  if (object_name != MACH_PORT_NULL) {
+    mach_port_deallocate(mach_task_self(), object_name);
+  }
+  if (result != KERN_SUCCESS) {
+    // No mappings at or above the requested address.
+    return true;
+  }
+  // mach_vm_region returns the first region at or above the address - the
+  // range is free if that region starts beyond its end.
+  return address >= reinterpret_cast<mach_vm_address_t>(base_address) + length;
+}
+#endif  // XE_PLATFORM_MAC
+
 uint32_t ToPosixProtectFlags(PageAccess access) {
   switch (access) {
     case PageAccess::kNoAccess:
@@ -88,12 +121,39 @@ uint32_t ToPosixProtectFlags(PageAccess access) {
 
 bool IsWritableExecutableMemorySupported() { return true; }
 
+void SetJitThreadWriteAccess(bool write_access) {
+#if XE_PLATFORM_MAC
+  pthread_jit_write_protect_np(!write_access);
+#endif
+}
+
+void FlushInstructionCache(void* base_address, size_t length) {
+  __builtin___clear_cache(
+      reinterpret_cast<char*>(base_address),
+      reinterpret_cast<char*>(base_address) + length);
+}
+
 void* AllocFixed(void* base_address, size_t length,
                  AllocationType allocation_type, PageAccess access) {
   // mmap does not support reserve / commit, so ignore allocation_type.
   uint32_t prot = ToPosixProtectFlags(access);
-  void* result = mmap(base_address, length, prot,
-                      MAP_PRIVATE | MAP_FIXED | MAP_ANONYMOUS, -1, 0);
+  int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+  if (base_address) {
+    flags |= MAP_FIXED;
+  }
+#if XE_PLATFORM_MAC
+  if (base_address && !IsRangeFree(base_address, length)) {
+    return nullptr;
+  }
+  if (access == PageAccess::kExecuteReadWrite ||
+      access == PageAccess::kExecuteReadOnly) {
+    // Executable anonymous memory must be allocated as a JIT region on Apple
+    // Silicon. Writing to it additionally requires the calling thread to hold
+    // write (rather than execute) access - see SetJitThreadWriteAccess.
+    flags |= MAP_JIT;
+  }
+#endif
+  void* result = mmap(base_address, length, prot, flags, -1, 0);
   if (result == MAP_FAILED) {
     return nullptr;
   } else {
@@ -190,6 +250,11 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length,
   int flags = MAP_SHARED;
   if (base_address) {
     flags |= MAP_FIXED;
+#if XE_PLATFORM_MAC
+    if (!IsRangeFree(base_address, length)) {
+      return nullptr;
+    }
+#endif
   }
   void* result = mmap64(base_address, length, prot, flags, handle, file_offset);
   return result == MAP_FAILED ? nullptr : result;

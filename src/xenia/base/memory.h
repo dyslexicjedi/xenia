@@ -91,6 +91,18 @@ bool IsWritableExecutableMemorySupported();
 // writable executable memory on a system with it.
 bool IsWritableExecutableMemoryPreferred();
 
+// Sets whether the calling thread writes to or executes from pages allocated
+// with PageAccess::kExecuteReadWrite. Some platforms (Apple Silicon) enforce
+// per-thread write XOR execute for JIT memory: pass true before writing
+// generated code, false before executing it. No-op on other platforms, where
+// writing and executing don't have to be toggled between.
+void SetJitThreadWriteAccess(bool write_access);
+
+// Makes the range visible to instruction fetch after generated code has been
+// written or modified. Required on architectures with non-coherent
+// instruction caches (such as ARM64); no-op on x86.
+void FlushInstructionCache(void* base_address, size_t length);
+
 // Allocates a block of memory at the given page-aligned base address.
 // Fails if the memory is not available.
 // Specify nullptr for base_address to leave it up to the system.

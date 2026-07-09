@@ -89,6 +89,14 @@ bool IsWritableExecutableMemorySupported() {
 #endif
 }
 
+void SetJitThreadWriteAccess(bool write_access) {
+  // Not needed - kExecuteReadWrite pages are always writable.
+}
+
+void FlushInstructionCache(void* base_address, size_t length) {
+  ::FlushInstructionCache(GetCurrentProcess(), base_address, length);
+}
+
 void* AllocFixed(void* base_address, size_t length,
                  AllocationType allocation_type, PageAccess access) {
   DWORD alloc_type = 0;

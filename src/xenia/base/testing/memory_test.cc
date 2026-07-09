@@ -538,6 +538,27 @@ TEST_CASE("map_view", "[virtual_memory_mapping]") {
   xe::memory::CloseFileMappingHandle(memory, path);
 }
 
+#if XE_PLATFORM_MAC
+TEST_CASE("map_view_occupied", "[virtual_memory_mapping]") {
+  // Mapping a view over an occupied range must fail like MapViewOfFileEx
+  // rather than replacing the existing mapping (which raw MAP_FIXED does).
+  auto path = fmt::format("xenia_test_{}", Clock::QueryHostTickCount());
+  const size_t length = 0x100;
+  auto memory = xe::memory::CreateFileMappingHandle(
+      path, length, xe::memory::PageAccess::kReadWrite, true);
+  REQUIRE(memory != xe::memory::kFileMappingHandleInvalid);
+
+  // The test binary's own image occupies its default base address.
+  uintptr_t occupied_address = 0x100000000;
+  auto view = xe::memory::MapFileView(
+      memory, reinterpret_cast<void*>(occupied_address), length,
+      xe::memory::PageAccess::kReadWrite, 0);
+  REQUIRE(view == nullptr);
+
+  xe::memory::CloseFileMappingHandle(memory, path);
+}
+#endif  // XE_PLATFORM_MAC
+
 TEST_CASE("read_write_view", "[virtual_memory_mapping]") {
   const size_t length = 0x100;
   auto path = fmt::format("xenia_test_{}", Clock::QueryHostTickCount());

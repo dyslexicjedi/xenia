@@ -316,6 +316,27 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
       return;
     }
   }
+
+  // No installed handler claimed the exception. Restore the original signal
+  // disposition and return; the faulting instruction re-executes and the
+  // original/default action (typically terminating with a crash report) takes
+  // over. Without this the instruction would retry, fault again and livelock
+  // the thread inside this handler.
+  switch (signal_number) {
+    case SIGILL:
+      sigaction(SIGILL, &original_sigill_handler_, nullptr);
+      break;
+    case SIGSEGV:
+      sigaction(SIGSEGV, &original_sigsegv_handler_, nullptr);
+      break;
+#if XE_PLATFORM_MAC
+    case SIGBUS:
+      sigaction(SIGBUS, &original_sigbus_handler_, nullptr);
+      break;
+#endif  // XE_PLATFORM_MAC
+    default:
+      break;
+  }
 }
 
 void ExceptionHandler::Install(Handler fn, void* data) {

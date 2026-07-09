@@ -285,6 +285,10 @@ workspace("xenia")
   include("third_party/snappy.lua")
   include("third_party/xxhash.lua")
 
+  if os.istarget("macosx") then
+    include("third_party/xbyak_aarch64.lua")
+  end
+
   if not os.istarget("android") then
     -- SDL2 requires sdl2-config, and as of November 2020 isn't high-quality on
     -- Android yet, most importantly in game controllers - the keycode and axis
@@ -314,6 +318,9 @@ workspace("xenia")
   include("src/xenia/apu/nop")
   include("src/xenia/base")
   include("src/xenia/cpu")
+  if os.istarget("macosx") then
+    include("src/xenia/cpu/backend/a64")
+  end
   include("src/xenia/cpu/backend/x64")
   include("src/xenia/debug/ui")
   include("src/xenia/gpu")

@@ -213,9 +213,17 @@ class TestRunner {
       }
     }
 
+    if (!backend) {
+      XELOGE("No CPU backend is available for this host architecture");
+      return false;
+    }
+
     // Setup a fresh processor.
     processor_.reset(new Processor(memory_.get(), nullptr));
-    processor_->Setup(std::move(backend));
+    if (!processor_->Setup(std::move(backend))) {
+      XELOGE("Unable to set up the processor");
+      return false;
+    }
     processor_->set_debug_info_flags(DebugInfoFlags::kDebugInfoAll);
 
     // Load the binary module.
@@ -379,7 +387,12 @@ bool DiscoverTests(const std::filesystem::path& test_path,
   auto file_infos = xe::filesystem::ListFiles(test_path);
   for (auto& file_info : file_infos) {
     if (file_info.name.extension() == ".s") {
-      test_files.push_back(test_path / file_info.name);
+      // Match the `xb gentests` selection: only instr_*/seq_* files are
+      // codegen tests (ppc_testing_native_thunks.s etc. are support files).
+      auto stem = xe::path_to_utf8(file_info.name.stem());
+      if (stem.rfind("instr_", 0) == 0 || stem.rfind("seq_", 0) == 0) {
+        test_files.push_back(test_path / file_info.name);
+      }
     }
   }
   return true;
@@ -404,6 +417,7 @@ void ProtectedRunTest(TestSuite& test_suite, TestRunner& runner,
     if (!runner.Setup(test_suite)) {
       XELOGE("    TEST FAILED SETUP");
       ++failed_count;
+      return;
     }
     if (runner.Run(test_case)) {
       ++passed_count;

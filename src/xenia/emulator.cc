@@ -231,11 +231,11 @@ X_STATUS Emulator::Setup(
   // Shared kernel state.
   kernel_state_ = std::make_unique<xe::kernel::KernelState>(this);
 
-  // Setup the core components.
+  // Setup the core components. Presentation is set up even without a window
+  // so the guest output can be captured offscreen (trace dumping).
   result = graphics_system_->Setup(
       processor_.get(), kernel_state_.get(),
-      display_window_ ? &display_window_->app_context() : nullptr,
-      display_window_ != nullptr);
+      display_window_ ? &display_window_->app_context() : nullptr, true);
   if (result) {
     return result;
   }

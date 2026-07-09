@@ -930,6 +930,18 @@ class SpirvShaderTranslator : public ShaderTranslator {
   spv::Id main_memexport_allowed_;
   // VS only - float3 (special exports).
   spv::Id var_main_point_size_edge_flag_kill_vertex_;
+  // VS, only for HostVertexShaderType::kRectangleListAsTriangleStrip - the
+  // guest vertex shader is executed in a loop for the 3 guest vertices of the
+  // rectangle, and the host vertex is constructed from their results.
+  // uint.
+  spv::Id var_main_rect_vertex_iteration_;
+  // float4[3].
+  spv::Id var_main_rect_positions_;
+  // float4[3 * interpolator count], iteration-major.
+  spv::Id var_main_rect_interpolators_;
+  spv::Block* rect_vertex_loop_header_;
+  spv::Block* rect_vertex_loop_continue_;
+  spv::Block* rect_vertex_loop_merge_;
   // PS, only when needed - bool.
   spv::Id var_main_kill_pixel_;
   // PS, only when writing to color render targets with fragment shader

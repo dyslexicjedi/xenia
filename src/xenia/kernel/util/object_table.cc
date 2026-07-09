@@ -28,11 +28,22 @@ ObjectTable::~ObjectTable() { Reset(); }
 void ObjectTable::Reset() {
   auto global_lock = global_critical_region_.Acquire();
 
-  // Release all objects.
+  // Release all objects, detaching each handle from its object first (as
+  // RemoveHandle does) so objects destroyed by this final release don't see
+  // stale entries in their handle bookkeeping in ~XObject.
   for (uint32_t n = 0; n < table_capacity_; n++) {
     ObjectTableEntry& entry = table_[n];
     if (entry.object) {
-      entry.object->Release();
+      auto object = entry.object;
+      entry.object = nullptr;
+      entry.handle_ref_count = 0;
+      X_HANDLE handle = XObject::kHandleBase + (n << 2);
+      auto handle_entry = std::find(object->handles().begin(),
+                                    object->handles().end(), handle);
+      if (handle_entry != object->handles().end()) {
+        object->handles().erase(handle_entry);
+      }
+      object->Release();
     }
   }
 

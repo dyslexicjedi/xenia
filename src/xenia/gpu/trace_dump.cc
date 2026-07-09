@@ -9,6 +9,8 @@
 
 #include "xenia/gpu/trace_dump.h"
 
+#include <algorithm>
+
 #include "third_party/stb/stb_image_write.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
@@ -30,6 +32,8 @@
 
 DEFINE_path(target_trace_file, "", "Specifies the trace file to load.", "GPU");
 DEFINE_path(trace_dump_path, "", "Output path for dumped files.", "GPU");
+DEFINE_int32(trace_dump_frame, 0,
+             "Index of the frame to dump, or -1 for the last frame.", "GPU");
 
 namespace xe {
 namespace gpu {
@@ -115,12 +119,19 @@ bool TraceDump::Load(const std::filesystem::path& trace_file_path) {
     return false;
   }
 
+  XELOGI("Loaded trace with {} frame(s)", player_->frame_count());
   return true;
 }
 
 int TraceDump::Run() {
   BeginHostCapture();
-  player_->SeekFrame(0);
+  int frame_index = cvars::trace_dump_frame;
+  if (frame_index < 0) {
+    frame_index += player_->frame_count();
+  }
+  frame_index =
+      std::max(0, std::min(frame_index, player_->frame_count() - 1));
+  player_->SeekFrame(frame_index);
   player_->SeekCommand(
       static_cast<int>(player_->current_frame()->commands.size() - 1));
   player_->WaitOnPlayback();

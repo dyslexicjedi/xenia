@@ -153,6 +153,9 @@ filter({"platforms:Mac", "language:C++"})
     "deprecated-literal-operator",
     -- Old bundled cxxopts negates INT_MIN/LLONG_MIN in a constant expression.
     "integer-overflow",
+    -- Old bundled imgui zero-initializes non-trivially-copyable types with
+    -- memset, which newer clang warns about.
+    "nontrivial-memcall",
   })
 
 filter("platforms:Android-*")

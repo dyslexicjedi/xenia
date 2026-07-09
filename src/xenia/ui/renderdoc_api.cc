@@ -22,6 +22,10 @@ namespace xe {
 namespace ui {
 
 std::unique_ptr<RenderDocAPI> RenderDocAPI::CreateIfConnected() {
+#if XE_PLATFORM_MAC
+  // RenderDoc doesn't support macOS.
+  return nullptr;
+#else
   std::unique_ptr<RenderDocAPI> renderdoc_api(new RenderDocAPI());
 
   pRENDERDOC_GetAPI get_api = nullptr;
@@ -62,6 +66,7 @@ std::unique_ptr<RenderDocAPI> RenderDocAPI::CreateIfConnected() {
   XELOGI("RenderDoc API initialized");
 
   return renderdoc_api;
+#endif  // XE_PLATFORM_MAC
 }
 
 RenderDocAPI::~RenderDocAPI() {

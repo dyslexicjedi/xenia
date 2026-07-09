@@ -16,7 +16,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 
-#if XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX || XE_PLATFORM_MAC
 #include <dlfcn.h>
 #elif XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"
@@ -34,12 +34,15 @@ bool SpirvToolsContext::Initialize(unsigned int spirv_version) {
     return false;
   }
   std::filesystem::path vulkan_sdk_path(vulkan_sdk_env);
-#if XE_PLATFORM_LINUX
-  library_ = dlopen((vulkan_sdk_path / "bin/libSPIRV-Tools-shared.so").c_str(),
-                    RTLD_NOW | RTLD_LOCAL);
+#if XE_PLATFORM_LINUX || XE_PLATFORM_MAC
+#if XE_PLATFORM_MAC
+  const auto library_path = vulkan_sdk_path / "lib/libSPIRV-Tools-shared.dylib";
+#else
+  const auto library_path = vulkan_sdk_path / "bin/libSPIRV-Tools-shared.so";
+#endif
+  library_ = dlopen(library_path.c_str(), RTLD_NOW | RTLD_LOCAL);
   if (!library_) {
-    XELOGE(
-        "SPIRV-Tools: Failed to load $VULKAN_SDK/bin/libSPIRV-Tools-shared.so");
+    XELOGE("SPIRV-Tools: Failed to load {}", library_path.string());
     Shutdown();
     return false;
   }
@@ -88,7 +91,7 @@ void SpirvToolsContext::Shutdown() {
     context_ = nullptr;
   }
   if (library_) {
-#if XE_PLATFORM_LINUX
+#if XE_PLATFORM_LINUX || XE_PLATFORM_MAC
     dlclose(library_);
 #elif XE_PLATFORM_WIN32
     FreeLibrary(library_);

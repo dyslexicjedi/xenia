@@ -29,6 +29,9 @@
 #if XE_PLATFORM_GNU_LINUX
 #include "xenia/ui/surface_gnulinux.h"
 #endif
+#if XE_PLATFORM_MAC
+#include "xenia/ui/surface_mac.h"
+#endif
 #if XE_PLATFORM_WIN32
 #include "xenia/ui/surface_win.h"
 #endif
@@ -221,6 +224,11 @@ Surface::TypeFlags VulkanPresenter::GetSurfaceTypesSupportedByInstance(
 #if XE_PLATFORM_GNU_LINUX
   if (instance_extensions.ext_KHR_xcb_surface) {
     type_flags |= Surface::kTypeFlag_XcbWindow;
+  }
+#endif
+#if XE_PLATFORM_MAC
+  if (instance_extensions.ext_EXT_metal_surface) {
+    type_flags |= Surface::kTypeFlag_MacMetalLayer;
   }
 #endif
 #if XE_PLATFORM_WIN32
@@ -610,6 +618,21 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
         vulkan_surface_create_result =
             ifn.vkCreateXcbSurfaceKHR(instance, &surface_create_info, nullptr,
                                       &paint_context_.vulkan_surface);
+      } break;
+#endif
+#if XE_PLATFORM_MAC
+      case Surface::kTypeIndex_MacMetalLayer: {
+        auto& mac_metal_layer_surface =
+            static_cast<const MacMetalLayerSurface&>(new_surface);
+        VkMetalSurfaceCreateInfoEXT surface_create_info;
+        surface_create_info.sType =
+            VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
+        surface_create_info.pNext = nullptr;
+        surface_create_info.flags = 0;
+        surface_create_info.pLayer = mac_metal_layer_surface.layer();
+        vulkan_surface_create_result = ifn.vkCreateMetalSurfaceEXT(
+            instance, &surface_create_info, nullptr,
+            &paint_context_.vulkan_surface);
       } break;
 #endif
 #if XE_PLATFORM_WIN32

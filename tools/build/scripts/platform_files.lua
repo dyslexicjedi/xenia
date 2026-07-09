@@ -52,6 +52,8 @@ local function match_platform_files(base_path, base_match)
       base_path.."/"..base_match.."_posix.cc",
       base_path.."/"..base_match.."_mac.h",
       base_path.."/"..base_match.."_mac.cc",
+      -- Objective-C++ implementations.
+      base_path.."/"..base_match.."_mac.mm",
     })
   filter({})
 end

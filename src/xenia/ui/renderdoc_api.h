@@ -12,8 +12,16 @@
 
 #include <memory>
 
-#include "third_party/renderdoc/renderdoc_app.h"
 #include "xenia/base/platform.h"
+
+#if XE_PLATFORM_MAC
+// RenderDoc doesn't support macOS - renderdoc_app.h fails its platform check,
+// and CreateIfConnected always returns nullptr. Keep the API struct opaque so
+// the pointer accessors still compile.
+struct RENDERDOC_API_1_0_0;
+#else
+#include "third_party/renderdoc/renderdoc_app.h"
+#endif
 
 #if XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"

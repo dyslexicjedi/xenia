@@ -37,11 +37,24 @@ project("xenia-ui-window-vulkan-demo")
   files({
     "../window_demo.cc",
     "vulkan_window_demo.cc",
-    project_root.."/src/xenia/ui/windowed_app_main_"..platform_suffix..".cc",
   })
   resincludedirs({
     project_root,
   })
+
+  filter("platforms:not Mac")
+    files({
+      project_root.."/src/xenia/ui/windowed_app_main_"..platform_suffix..".cc",
+    })
+
+  filter("platforms:Mac")
+    files({
+      project_root.."/src/xenia/ui/windowed_app_main_mac.mm",
+    })
+    links({
+      "AppKit.framework",
+      "QuartzCore.framework",
+    })
 
   filter("platforms:Linux")
     links({

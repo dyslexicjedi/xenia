@@ -42,8 +42,8 @@ project("xenia-app")
   local_platform_files()
   files({
     "../base/main_init_"..platform_suffix..".cc",
-    "../ui/windowed_app_main_"..platform_suffix..".cc",
   })
+  windowed_app_main_files()
 
   resincludedirs({
     project_root,

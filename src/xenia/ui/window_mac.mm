@@ -130,6 +130,8 @@ xe::ui::VirtualKey TranslateKeycode(uint16_t keycode) {
       return VirtualKey::kBack;
     case 0x35:  // kVK_Escape
       return VirtualKey::kEscape;
+    case 0x36:  // kVK_RightCommand
+      return VirtualKey::kRWin;
     case 0x37:  // kVK_Command
       return VirtualKey::kLWin;
     case 0x38:  // kVK_Shift
@@ -366,6 +368,46 @@ xe::ui::VirtualKey TranslateKeycode(uint16_t keycode) {
 
 - (void)keyUp:(NSEvent*)event {
   [self handleKeyEvent:event isUp:YES];
+}
+
+// Modifier keys don't produce keyDown / keyUp - their transitions arrive here,
+// with the direction recovered from whether the corresponding flag is set.
+// (If both left and right of a pair are held and one is released, the flag
+// stays set and the release is reported as another press - the
+// device-independent flags can't distinguish sides.)
+- (void)flagsChanged:(NSEvent*)event {
+  if (!xenia_window) {
+    return;
+  }
+  NSEventModifierFlags modifiers = event.modifierFlags;
+  bool is_down;
+  switch (event.keyCode) {
+    case 0x38:  // kVK_Shift
+    case 0x3C:  // kVK_RightShift
+      is_down = (modifiers & NSEventModifierFlagShift) != 0;
+      break;
+    case 0x3B:  // kVK_Control
+    case 0x3E:  // kVK_RightControl
+      is_down = (modifiers & NSEventModifierFlagControl) != 0;
+      break;
+    case 0x3A:  // kVK_Option
+    case 0x3D:  // kVK_RightOption
+      is_down = (modifiers & NSEventModifierFlagOption) != 0;
+      break;
+    case 0x36:  // kVK_RightCommand
+    case 0x37:  // kVK_Command
+      is_down = (modifiers & NSEventModifierFlagCommand) != 0;
+      break;
+    default:
+      // Caps Lock and Fn toggle rather than press/release cleanly.
+      return;
+  }
+  xenia_window->HandleKey(event.keyCode, 0,
+                          (modifiers & NSEventModifierFlagShift) != 0,
+                          (modifiers & NSEventModifierFlagControl) != 0,
+                          (modifiers & NSEventModifierFlagOption) != 0,
+                          (modifiers & NSEventModifierFlagCommand) != 0,
+                          !is_down);
 }
 
 @end

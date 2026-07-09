@@ -60,8 +60,8 @@ project("xenia-gpu-vulkan-trace-viewer")
   })
   files({
     "vulkan_trace_viewer_main.cc",
-    "../../ui/windowed_app_main_"..platform_suffix..".cc",
   })
+  windowed_app_main_files()
 
   filter("architecture:x86_64")
     links({

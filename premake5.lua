@@ -158,6 +158,12 @@ filter({"platforms:Mac", "language:C++"})
     "nontrivial-memcall",
   })
 
+-- Premake suffixes macOS WindowedApp targets with ".app" even though gmake
+-- produces a plain executable, not a bundle - and macOS stalls the exec of
+-- plain files named *.app in Gatekeeper policy evaluation.
+filter({"platforms:Mac", "kind:WindowedApp"})
+  targetextension("")
+
 filter("platforms:Android-*")
   system("android")
   systemversion("24")

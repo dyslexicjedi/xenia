@@ -33,8 +33,8 @@ project("xenia-hid-demo")
   })
   files({
     "hid_demo.cc",
-    "../ui/windowed_app_main_"..platform_suffix..".cc",
   })
+  windowed_app_main_files()
   resincludedirs({
     project_root,
   })

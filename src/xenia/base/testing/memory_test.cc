@@ -514,6 +514,13 @@ TEST_CASE("create_and_close_file_mapping", "Virtual Memory Mapping") {
   xe::memory::CloseFileMappingHandle(memory, path);
 }
 
+#if XE_PLATFORM_MAC
+// 0x100000000 is the default image base of the executable itself on macOS.
+constexpr uintptr_t kFileMappingTestAddress = 0x400000000;
+#else
+constexpr uintptr_t kFileMappingTestAddress = 0x100000000;
+#endif
+
 TEST_CASE("map_view", "[virtual_memory_mapping]") {
   auto path = fmt::format("xenia_test_{}", Clock::QueryHostTickCount());
   const size_t length = 0x100;
@@ -521,7 +528,7 @@ TEST_CASE("map_view", "[virtual_memory_mapping]") {
       path, length, xe::memory::PageAccess::kReadWrite, true);
   REQUIRE(memory != xe::memory::kFileMappingHandleInvalid);
 
-  uintptr_t address = 0x100000000;
+  uintptr_t address = kFileMappingTestAddress;
   auto view =
       xe::memory::MapFileView(memory, reinterpret_cast<void*>(address), length,
                               xe::memory::PageAccess::kReadWrite, 0);
@@ -538,7 +545,7 @@ TEST_CASE("read_write_view", "[virtual_memory_mapping]") {
       path, length, xe::memory::PageAccess::kReadWrite, true);
   REQUIRE(memory != xe::memory::kFileMappingHandleInvalid);
 
-  uintptr_t address = 0x100000000;
+  uintptr_t address = kFileMappingTestAddress;
   auto view =
       xe::memory::MapFileView(memory, reinterpret_cast<void*>(address), length,
                               xe::memory::PageAccess::kReadWrite, 0);

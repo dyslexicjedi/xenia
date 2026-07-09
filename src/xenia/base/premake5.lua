@@ -16,5 +16,14 @@ project("xenia-base")
   files({
     "debug_visualizers.natvis",
   })
+  filter("platforms:Mac")
+    removefiles({
+      -- Threading is fully implemented by threading_posix.cc; the _mac file
+      -- is a vestigial partial implementation with conflicting symbols.
+      "threading_mac.cc",
+      -- debugging_mac.cc provides the sysctl-based implementation.
+      "debugging_posix.cc",
+    })
+  filter({})
 
 include("testing")

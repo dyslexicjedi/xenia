@@ -25,6 +25,17 @@
 #include <unistd.h>
 #include <iostream>
 
+#include "xenia/base/platform.h"
+
+#if XE_PLATFORM_MAC
+// Darwin off_t is always 64-bit; the transitional LFS64 interfaces don't
+// exist.
+#define off64_t off_t
+#define fseeko64 fseeko
+#define ftello64 ftello
+#define ftruncate64 ftruncate
+#endif
+
 namespace xe {
 
 std::string path_to_utf8(const std::filesystem::path& path) {

@@ -136,6 +136,25 @@ filter({"platforms:Linux", "language:C++", "toolset:clang", "files:*.cc or *.cpp
     "-stdlib=libstdc++",
   })
 
+filter("platforms:Mac")
+  system("macosx")
+  toolset("clang")
+  links({
+    "pthread",
+  })
+
+filter({"platforms:Mac", "language:C++"})
+  disablewarnings({
+    -- Old bundled fmt instantiates std::char_traits for non-character types,
+    -- deprecated in newer libc++.
+    "deprecated-declarations",
+    -- Old bundled fmt/date declare literal operators with whitespace before
+    -- the identifier, deprecated in newer clang.
+    "deprecated-literal-operator",
+    -- Old bundled cxxopts negates INT_MIN/LLONG_MIN in a constant expression.
+    "integer-overflow",
+  })
+
 filter("platforms:Android-*")
   system("android")
   systemversion("24")
@@ -219,15 +238,17 @@ workspace("xenia")
       architecture("x86_64")
     filter({})
   else
-    architecture("x86_64")
     if os.istarget("linux") then
+      architecture("x86_64")
       platforms({"Linux"})
     elseif os.istarget("macosx") then
+      architecture("ARM64")
       platforms({"Mac"})
-      xcodebuildsettings({           
-        ["ARCHS"] = "x86_64"
+      xcodebuildsettings({
+        ["ARCHS"] = "arm64"
       })
     elseif os.istarget("windows") then
+      architecture("x86_64")
       platforms({"Windows"})
       -- 10.0.15063.0: ID3D12GraphicsCommandList1::SetSamplePositions.
       -- 10.0.19041.0: D3D12_HEAP_FLAG_CREATE_NOT_ZEROED.

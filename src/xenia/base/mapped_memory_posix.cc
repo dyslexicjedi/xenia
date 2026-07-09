@@ -18,6 +18,15 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/platform.h"
 
+#if XE_PLATFORM_MAC
+// Darwin off_t and struct stat are always 64-bit; the transitional LFS64
+// interfaces don't exist.
+#define off64_t off_t
+#define stat64 stat
+#define fstat64 fstat
+#define ftruncate64 ftruncate
+#endif
+
 namespace xe {
 
 class PosixMappedMemory : public MappedMemory {

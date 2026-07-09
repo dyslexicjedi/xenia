@@ -9,8 +9,14 @@
 
 #include "xenia/base/exception_handler.h"
 
+#include "xenia/base/platform.h"
+
 #include <signal.h>
+#if XE_PLATFORM_MAC
+#include <sys/ucontext.h>
+#else
 #include <ucontext.h>
+#endif
 #include <cstdint>
 
 #include "xenia/base/assert.h"
@@ -65,6 +71,21 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
   std::memcpy(thread_context.xmm_registers, mcontext.fpregs->_xmm,
               sizeof(thread_context.xmm_registers));
 #elif XE_ARCH_ARM64
+#if XE_PLATFORM_MAC
+  // Darwin stores the general-purpose, floating-point and exception states in
+  // fixed-layout structures - no context extension walking is needed, and the
+  // ESR is always available.
+  std::memcpy(thread_context.x, mcontext->__ss.__x,
+              sizeof(mcontext->__ss.__x));
+  thread_context.x[29] = mcontext->__ss.__fp;
+  thread_context.x[30] = mcontext->__ss.__lr;
+  thread_context.sp = mcontext->__ss.__sp;
+  thread_context.pc = mcontext->__ss.__pc;
+  thread_context.pstate = mcontext->__ss.__cpsr;
+  thread_context.fpsr = mcontext->__ns.__fpsr;
+  thread_context.fpcr = mcontext->__ns.__fpcr;
+  std::memcpy(thread_context.v, mcontext->__ns.__v, sizeof(thread_context.v));
+#else
   std::memcpy(thread_context.x, mcontext.regs, sizeof(thread_context.x));
   thread_context.sp = mcontext.sp;
   thread_context.pc = mcontext.pc;
@@ -97,6 +118,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
     std::memcpy(thread_context.v, mcontext_fpsimd->vregs,
                 sizeof(thread_context.v));
   }
+#endif  // XE_PLATFORM_MAC
 #endif  // XE_ARCH
 
   Exception ex;
@@ -114,6 +136,37 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
               ? Exception::AccessViolationOperation::kWrite
               : Exception::AccessViolationOperation::kRead;
 #elif XE_ARCH_ARM64
+#if XE_PLATFORM_MAC
+      // For a Data Abort (EC - ESR_EL1 bits 31:26 - 0b100100 from a lower
+      // Exception Level, 0b100101 without a change in the Exception Level),
+      // bit 6 is 0 for reading from a memory location, 1 for writing to a
+      // memory location.
+      const uint64_t mac_esr = mcontext->__es.__esr;
+      if (((mac_esr >> 26) & 0b111110) == 0b100100) {
+        access_violation_operation =
+            (mac_esr & (UINT64_C(1) << 6))
+                ? Exception::AccessViolationOperation::kWrite
+                : Exception::AccessViolationOperation::kRead;
+      } else {
+        // Determine the memory access direction based on which instruction has
+        // requested it.
+        bool instruction_is_store;
+        if (IsArm64LoadPrefetchStore(
+                *reinterpret_cast<const uint32_t*>(mcontext->__ss.__pc),
+                instruction_is_store)) {
+          access_violation_operation =
+              instruction_is_store ? Exception::AccessViolationOperation::kWrite
+                                   : Exception::AccessViolationOperation::kRead;
+        } else {
+          assert_always(
+              "The exception is not a Data Abort, and the faulting "
+              "instruction is not a known load, prefetch or store "
+              "instruction");
+          access_violation_operation =
+              Exception::AccessViolationOperation::kUnknown;
+        }
+      }
+#else
       // For a Data Abort (EC - ESR_EL1 bits 31:26 - 0b100100 from a lower
       // Exception Level, 0b100101 without a change in the Exception Level),
       // bit 6 is 0 for reading from a memory location, 1 for writing to a
@@ -148,6 +201,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
               Exception::AccessViolationOperation::kUnknown;
         }
       }
+#endif  // XE_PLATFORM_MAC
 #else
       access_violation_operation =
           Exception::AccessViolationOperation::kUnknown;
@@ -191,6 +245,37 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
                     sizeof(vec128_t));
       }
 #elif XE_ARCH_ARM64
+#if XE_PLATFORM_MAC
+      uint32_t modified_register_index;
+      uint32_t modified_x_registers_remaining = ex.modified_x_registers();
+      while (xe::bit_scan_forward(modified_x_registers_remaining,
+                                  &modified_register_index)) {
+        modified_x_registers_remaining &=
+            ~(UINT32_C(1) << modified_register_index);
+        const uint64_t x_value = thread_context.x[modified_register_index];
+        if (modified_register_index == 29) {
+          mcontext->__ss.__fp = x_value;
+        } else if (modified_register_index == 30) {
+          mcontext->__ss.__lr = x_value;
+        } else {
+          mcontext->__ss.__x[modified_register_index] = x_value;
+        }
+      }
+      mcontext->__ss.__sp = thread_context.sp;
+      mcontext->__ss.__pc = thread_context.pc;
+      mcontext->__ss.__cpsr = uint32_t(thread_context.pstate);
+      mcontext->__ns.__fpsr = thread_context.fpsr;
+      mcontext->__ns.__fpcr = thread_context.fpcr;
+      uint32_t modified_v_registers_remaining = ex.modified_v_registers();
+      while (xe::bit_scan_forward(modified_v_registers_remaining,
+                                  &modified_register_index)) {
+        modified_v_registers_remaining &=
+            ~(UINT32_C(1) << modified_register_index);
+        std::memcpy(&mcontext->__ns.__v[modified_register_index],
+                    &thread_context.v[modified_register_index],
+                    sizeof(vec128_t));
+      }
+#else
       uint32_t modified_register_index;
       uint32_t modified_x_registers_remaining = ex.modified_x_registers();
       while (xe::bit_scan_forward(modified_x_registers_remaining,
@@ -218,6 +303,7 @@ static void ExceptionHandlerCallback(int signal_number, siginfo_t* signal_info,
               thread_context.x[modified_register_index];
         }
       }
+#endif  // XE_PLATFORM_MAC
 #endif  // XE_ARCH
       return;
     }

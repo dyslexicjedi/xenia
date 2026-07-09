@@ -27,6 +27,13 @@
 #include "xenia/base/main_android.h"
 #endif
 
+#if XE_PLATFORM_MAC
+// Darwin off_t is always 64-bit; the transitional LFS64 interfaces don't
+// exist.
+#define ftruncate64 ftruncate
+#define mmap64 mmap
+#endif
+
 namespace xe {
 namespace memory {
 
@@ -178,8 +185,14 @@ void CloseFileMappingHandle(FileMappingHandle handle,
 void* MapFileView(FileMappingHandle handle, void* base_address, size_t length,
                   PageAccess access, size_t file_offset) {
   uint32_t prot = ToPosixProtectFlags(access);
-  return mmap64(base_address, length, prot, MAP_PRIVATE | MAP_ANONYMOUS, handle,
-                file_offset);
+  // Like MapViewOfFileEx on Windows: a shared view of the file mapping placed
+  // exactly at base_address (if requested), or nullptr on failure.
+  int flags = MAP_SHARED;
+  if (base_address) {
+    flags |= MAP_FIXED;
+  }
+  void* result = mmap64(base_address, length, prot, flags, handle, file_offset);
+  return result == MAP_FAILED ? nullptr : result;
 }
 
 bool UnmapFileView(FileMappingHandle handle, void* base_address,

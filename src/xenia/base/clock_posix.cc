@@ -11,10 +11,17 @@
 
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
+#include "xenia/base/platform.h"
 
 namespace xe {
 
 uint64_t Clock::host_tick_frequency_platform() {
+#if XE_PLATFORM_MAC
+  // host_tick_count_platform() returns nanoseconds regardless of the
+  // resolution reported by clock_getres() (~42ns on Apple Silicon, from the
+  // 24MHz Mach timebase) - the tick unit is still one nanosecond.
+  return 1000000000ull;
+#else
   timespec res;
   int error = clock_getres(CLOCK_MONOTONIC_RAW, &res);
   assert_zero(error);
@@ -22,6 +29,7 @@ uint64_t Clock::host_tick_frequency_platform() {
 
   // Convert nano seconds to hertz. Resolution is 1ns on most systems.
   return 1000000000ull / res.tv_nsec;
+#endif
 }
 
 uint64_t Clock::host_tick_count_platform() {

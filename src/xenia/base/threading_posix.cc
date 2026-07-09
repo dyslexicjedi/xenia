@@ -17,7 +17,9 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#if !XE_PLATFORM_MAC
 #include <sys/eventfd.h>
+#endif
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
@@ -104,6 +106,34 @@ enum class SignalType {
   k_Count
 };
 
+#if XE_PLATFORM_MAC
+// macOS has no POSIX real-time signals - map the signal types needed on this
+// platform (thread termination uses pthread_cancel here, as on desktop Linux)
+// to the user-defined signals.
+int GetSystemSignal(SignalType num) {
+  switch (num) {
+    case SignalType::kThreadSuspend:
+      return SIGUSR1;
+    case SignalType::kThreadUserCallback:
+      return SIGUSR2;
+    default:
+      assert_always();
+      return -1;
+  }
+}
+
+SignalType GetSystemSignalType(int num) {
+  switch (num) {
+    case SIGUSR1:
+      return SignalType::kThreadSuspend;
+    case SIGUSR2:
+      return SignalType::kThreadUserCallback;
+    default:
+      assert_always();
+      return SignalType::k_Count;
+  }
+}
+#else
 int GetSystemSignal(SignalType num) {
   auto result = SIGRTMIN + static_cast<int>(num);
   assert_true(result < SIGRTMAX);
@@ -113,6 +143,7 @@ int GetSystemSignal(SignalType num) {
 SignalType GetSystemSignalType(int num) {
   return static_cast<SignalType>(num - SIGRTMIN);
 }
+#endif  // XE_PLATFORM_MAC
 
 thread_local std::array<bool, static_cast<size_t>(SignalType::k_Count)>
     signal_handler_installed = {};
@@ -135,7 +166,13 @@ void EnableAffinityConfiguration() {}
 // uint64_t ticks() { return mach_absolute_time(); }
 
 uint32_t current_thread_system_id() {
+#if XE_PLATFORM_MAC
+  uint64_t tid;
+  pthread_threadid_np(nullptr, &tid);
+  return static_cast<uint32_t>(tid);
+#else
   return static_cast<uint32_t>(syscall(SYS_gettid));
+#endif
 }
 
 void MaybeYield() {
@@ -581,7 +618,14 @@ class PosixCondition<Thread> : public PosixConditionBase {
     WaitStarted();
     std::unique_lock<std::mutex> lock(state_mutex_);
     if (state_ != State::kUninitialized && state_ != State::kFinished) {
+#if XE_PLATFORM_MAC
+      // macOS can only set the name of the current thread.
+      if (pthread_equal(thread_, pthread_self())) {
+        pthread_setname_np(std::string(name).c_str());
+      }
+#else
       pthread_setname_np(thread_, std::string(name).c_str());
+#endif
 #if XE_PLATFORM_ANDROID
       SetAndroidPreApi26Name(name);
 #endif
@@ -599,8 +643,24 @@ class PosixCondition<Thread> : public PosixConditionBase {
   }
 #endif
 
-  uint32_t system_id() const { return static_cast<uint32_t>(thread_); }
+  uint32_t system_id() const {
+#if XE_PLATFORM_MAC
+    // pthread_t is a pointer on Darwin - use the Mach thread port instead.
+    return pthread_mach_thread_np(thread_);
+#else
+    return static_cast<uint32_t>(thread_);
+#endif
+  }
 
+#if XE_PLATFORM_MAC
+  // Thread affinity is not settable on macOS.
+  uint64_t affinity_mask() {
+    WaitStarted();
+    return ~UINT64_C(0);
+  }
+
+  void set_affinity_mask(uint64_t mask) { WaitStarted(); }
+#else
   uint64_t affinity_mask() {
     WaitStarted();
     cpu_set_t cpu_set;
@@ -643,6 +703,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
     }
 #endif
   }
+#endif  // XE_PLATFORM_MAC
 
   int priority() {
     WaitStarted();
@@ -668,6 +729,11 @@ class PosixCondition<Thread> : public PosixConditionBase {
     WaitStarted();
     std::unique_lock<std::mutex> lock(callback_mutex_);
     user_callback_ = std::move(callback);
+#if XE_PLATFORM_MAC
+    // macOS has no (pthread_)sigqueue - the handler on the target thread
+    // fetches the callback through current_thread_ instead of si_value.
+    pthread_kill(thread_, GetSystemSignal(SignalType::kThreadUserCallback));
+#else
     sigval value{};
     value.sival_ptr = this;
 #if XE_PLATFORM_ANDROID
@@ -677,6 +743,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
     pthread_sigqueue(thread_, GetSystemSignal(SignalType::kThreadUserCallback),
                      value);
 #endif
+#endif  // XE_PLATFORM_MAC
   }
 
   void CallUserCallback() {
@@ -1157,7 +1224,11 @@ void Thread::Exit(int exit_code) {
 }
 
 void set_name(const std::string_view name) {
+#if XE_PLATFORM_MAC
+  pthread_setname_np(std::string(name).c_str());
+#else
   pthread_setname_np(pthread_self(), std::string(name).c_str());
+#endif
 #if XE_PLATFORM_ANDROID
   if (!android_pthread_getname_np_ && current_thread_) {
     current_thread_->condition().SetAndroidPreApi26Name(name);
@@ -1172,12 +1243,21 @@ static void signal_handler(int signal, siginfo_t* info, void* /*context*/) {
       current_thread_->WaitSuspended();
     } break;
     case SignalType::kThreadUserCallback: {
+#if XE_PLATFORM_MAC
+      // Queued without a signal value - the handler runs on the target
+      // thread, so the callback is reachable through current_thread_.
+      assert_not_null(current_thread_);
+      if (alertable_state_) {
+        current_thread_->condition().CallUserCallback();
+      }
+#else
       assert_not_null(info->si_value.sival_ptr);
       auto p_thread =
           static_cast<PosixCondition<Thread>*>(info->si_value.sival_ptr);
       if (alertable_state_) {
         p_thread->CallUserCallback();
       }
+#endif  // XE_PLATFORM_MAC
     } break;
 #if XE_PLATFORM_ANDROID
     case SignalType::kThreadTerminate: {

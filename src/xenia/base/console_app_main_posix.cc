@@ -13,8 +13,14 @@
 #include "xenia/base/console_app_main.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/platform.h"
 
+#if XE_PLATFORM_MAC
+// Apple clang rejects 'extern "C"' on main.
+int main(int argc, char** argv) {
+#else
 extern "C" int main(int argc, char** argv) {
+#endif
   xe::ConsoleAppEntryInfo entry_info = xe::GetConsoleAppEntryInfo();
 
   if (!entry_info.transparent_options) {

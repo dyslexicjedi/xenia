@@ -448,7 +448,7 @@ int TraceViewer::RecursiveDrawCommandBufferUI(
         }
 
         ImGui::PushID(int(i));
-        if (ImGui::TreeNode((void*)0, "Indirect Buffer %" PRIu64, i)) {
+        if (ImGui::TreeNode((void*)0, "Indirect Buffer %zu", i)) {
           ImGui::Indent();
           auto id = RecursiveDrawCommandBufferUI(
               frame, buffer->commands[i].command_subtree.get());
@@ -830,30 +830,30 @@ void TraceViewer::DrawVertexFetcher(Shader* shader,
       switch (attrib.fetch_instr.attributes.data_format) {
         case xenos::VertexFormat::k_32:
         case xenos::VertexFormat::k_32_FLOAT:
-          ImGui::Text("e%" PRId64 ".x", el_index);
+          ImGui::Text("e%zu.x", el_index);
           ImGui::NextColumn();
           break;
         case xenos::VertexFormat::k_16_16:
         case xenos::VertexFormat::k_16_16_FLOAT:
         case xenos::VertexFormat::k_32_32:
         case xenos::VertexFormat::k_32_32_FLOAT:
-          ImGui::Text("e%" PRId64 ".x", el_index);
+          ImGui::Text("e%zu.x", el_index);
           ImGui::NextColumn();
-          ImGui::Text("e%" PRId64 ".y", el_index);
+          ImGui::Text("e%zu.y", el_index);
           ImGui::NextColumn();
           break;
         case xenos::VertexFormat::k_10_11_11:
         case xenos::VertexFormat::k_11_11_10:
         case xenos::VertexFormat::k_32_32_32_FLOAT:
-          ImGui::Text("e%" PRId64 ".x", el_index);
+          ImGui::Text("e%zu.x", el_index);
           ImGui::NextColumn();
-          ImGui::Text("e%" PRId64 ".y", el_index);
+          ImGui::Text("e%zu.y", el_index);
           ImGui::NextColumn();
-          ImGui::Text("e%" PRId64 ".z", el_index);
+          ImGui::Text("e%zu.z", el_index);
           ImGui::NextColumn();
           break;
         case xenos::VertexFormat::k_8_8_8_8:
-          ImGui::Text("e%" PRId64 ".xyzw", el_index);
+          ImGui::Text("e%zu.xyzw", el_index);
           ImGui::NextColumn();
           break;
         case xenos::VertexFormat::k_2_10_10_10:
@@ -861,13 +861,13 @@ void TraceViewer::DrawVertexFetcher(Shader* shader,
         case xenos::VertexFormat::k_32_32_32_32:
         case xenos::VertexFormat::k_16_16_16_16_FLOAT:
         case xenos::VertexFormat::k_32_32_32_32_FLOAT:
-          ImGui::Text("e%" PRId64 ".x", el_index);
+          ImGui::Text("e%zu.x", el_index);
           ImGui::NextColumn();
-          ImGui::Text("e%" PRId64 ".y", el_index);
+          ImGui::Text("e%zu.y", el_index);
           ImGui::NextColumn();
-          ImGui::Text("e%" PRId64 ".z", el_index);
+          ImGui::Text("e%zu.z", el_index);
           ImGui::NextColumn();
-          ImGui::Text("e%" PRId64 ".w", el_index);
+          ImGui::Text("e%zu.w", el_index);
           ImGui::NextColumn();
           break;
         case xenos::VertexFormat::kUndefined:
@@ -1642,7 +1642,7 @@ void TraceViewer::DrawStateUI() {
       vertices.resize(size / 4);
       QueryVSOutput(vertices.data(), size);
 
-      ImGui::Text("%" PRIu64 " output vertices", vertices.size() / 4);
+      ImGui::Text("%zu output vertices", vertices.size() / 4);
       ImGui::SameLine();
       static bool normalize = false;
       ImGui::Checkbox("Normalize", &normalize);

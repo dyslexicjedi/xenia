@@ -30,6 +30,15 @@
 #include <unistd.h>
 #endif
 
+// XSocket exposes the guest protocol numbers as enum members with the same
+// names as the BSD socket macros.
+#ifdef IPPROTO_TCP
+#undef IPPROTO_TCP
+#endif
+#ifdef IPPROTO_UDP
+#undef IPPROTO_UDP
+#endif
+
 namespace xe {
 namespace kernel {
 
@@ -62,7 +71,7 @@ X_STATUS XSocket::Initialize(AddressFamily af, Type type, Protocol proto) {
 X_STATUS XSocket::Close() {
 #if XE_PLATFORM_WIN32
   int ret = closesocket(native_handle_);
-#elif XE_PLATFORM_LINUX
+#else
   int ret = close(native_handle_);
 #endif
 
@@ -105,7 +114,7 @@ X_STATUS XSocket::IOControl(uint32_t cmd, uint8_t* arg_ptr) {
   }
 
   return X_STATUS_SUCCESS;
-#elif XE_PLATFORM_LINUX
+#else
   return X_STATUS_UNSUCCESSFUL;
 #endif
 }

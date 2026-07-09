@@ -30,9 +30,13 @@ XbdmModule::XbdmModule(Emulator* emulator, KernelState* kernel_state)
 #undef XE_MODULE_EXPORT_GROUP
 }
 
-std::vector<xe::cpu::Export*> xbdm_exports(4096);
+static auto& get_xbdm_exports() {
+  static std::vector<xe::cpu::Export*> xbdm_exports(4096);
+  return xbdm_exports;
+}
 
 xe::cpu::Export* RegisterExport_xbdm(xe::cpu::Export* export_entry) {
+  auto& xbdm_exports = get_xbdm_exports();
   assert_true(export_entry->ordinal < xbdm_exports.size());
   xbdm_exports[export_entry->ordinal] = export_entry;
   return export_entry;
@@ -47,6 +51,7 @@ void XbdmModule::RegisterExportTable(xe::cpu::ExportResolver* export_resolver) {
 #include "xenia/kernel/xbdm/xbdm_table.inc"
   };
 #include "xenia/kernel/util/export_table_post.inc"
+  auto& xbdm_exports = get_xbdm_exports();
   for (size_t i = 0; i < xe::countof(xbdm_export_table); ++i) {
     auto& export_entry = xbdm_export_table[i];
     assert_true(export_entry.ordinal < xbdm_exports.size());

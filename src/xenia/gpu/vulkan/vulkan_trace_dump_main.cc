@@ -27,6 +27,7 @@ class VulkanTraceDump : public TraceDump {
   }
 
   void BeginHostCapture() override {
+#if !XE_PLATFORM_MAC
     const ui::RenderDocAPI* const renderdoc_api =
         static_cast<const ui::vulkan::VulkanProvider*>(
             graphics_system_->provider())
@@ -35,9 +36,11 @@ class VulkanTraceDump : public TraceDump {
     if (renderdoc_api && !renderdoc_api->api_1_0_0()->IsFrameCapturing()) {
       renderdoc_api->api_1_0_0()->StartFrameCapture(nullptr, nullptr);
     }
+#endif
   }
 
   void EndHostCapture() override {
+#if !XE_PLATFORM_MAC
     const ui::RenderDocAPI* const renderdoc_api =
         static_cast<const ui::vulkan::VulkanProvider*>(
             graphics_system_->provider())
@@ -46,6 +49,7 @@ class VulkanTraceDump : public TraceDump {
     if (renderdoc_api && renderdoc_api->api_1_0_0()->IsFrameCapturing()) {
       renderdoc_api->api_1_0_0()->EndFrameCapture(nullptr, nullptr);
     }
+#endif
   }
 };
 

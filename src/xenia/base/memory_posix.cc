@@ -12,8 +12,10 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <cerrno>
 #include <cstddef>
 
+#include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
@@ -79,8 +81,7 @@ size_t allocation_granularity() { return page_size(); }
 // ranges - so failing on occupied ranges, as VirtualAlloc/MapViewOfFileEx do
 // on Windows, requires an explicit occupancy query.
 static bool IsRangeFree(void* base_address, size_t length) {
-  mach_vm_address_t address =
-      reinterpret_cast<mach_vm_address_t>(base_address);
+  mach_vm_address_t address = reinterpret_cast<mach_vm_address_t>(base_address);
   mach_vm_size_t size = 0;
   vm_region_basic_info_data_64_t info;
   mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
@@ -98,6 +99,15 @@ static bool IsRangeFree(void* base_address, size_t length) {
   // mach_vm_region returns the first region at or above the address - the
   // range is free if that region starts beyond its end.
   return address >= reinterpret_cast<mach_vm_address_t>(base_address) + length;
+}
+
+static void AlignRangeToPage(void*& base_address, size_t& length) {
+  const uintptr_t page_mask = page_size() - 1;
+  const uintptr_t start = reinterpret_cast<uintptr_t>(base_address);
+  const uintptr_t aligned_start = start & ~page_mask;
+  const uintptr_t aligned_end = (start + length + page_mask) & ~page_mask;
+  base_address = reinterpret_cast<void*>(aligned_start);
+  length = aligned_end - aligned_start;
 }
 #endif  // XE_PLATFORM_MAC
 
@@ -128,9 +138,8 @@ void SetJitThreadWriteAccess(bool write_access) {
 }
 
 void FlushInstructionCache(void* base_address, size_t length) {
-  __builtin___clear_cache(
-      reinterpret_cast<char*>(base_address),
-      reinterpret_cast<char*>(base_address) + length);
+  __builtin___clear_cache(reinterpret_cast<char*>(base_address),
+                          reinterpret_cast<char*>(base_address) + length);
 }
 
 void* AllocFixed(void* base_address, size_t length,
@@ -143,6 +152,25 @@ void* AllocFixed(void* base_address, size_t length,
   }
 #if XE_PLATFORM_MAC
   if (base_address && !IsRangeFree(base_address, length)) {
+    // VirtualAlloc's commit operations apply to existing mappings. Guest
+    // memory uses this to make portions of its already-mapped shared backing
+    // readable and writable; replacing that mapping with MAP_FIXED would lose
+    // the aliasing, while rejecting it leaves every guest heap inaccessible.
+    if (allocation_type != AllocationType::kReserve) {
+      void* protect_base = base_address;
+      size_t protect_length = length;
+      AlignRangeToPage(protect_base, protect_length);
+      if (mprotect(protect_base, protect_length, prot) == 0) {
+        return base_address;
+      }
+      XELOGE("mprotect({:#x}, {}) failed: {}",
+             reinterpret_cast<uintptr_t>(base_address), length,
+             strerror(errno));
+      return nullptr;
+    }
+    // Reserve-only fixed allocations must retain the Windows failure-on-
+    // collision behavior rather than letting Darwin MAP_FIXED clobber a live
+    // mapping.
     return nullptr;
   }
   if (access == PageAccess::kExecuteReadWrite ||
@@ -155,6 +183,8 @@ void* AllocFixed(void* base_address, size_t length,
 #endif
   void* result = mmap(base_address, length, prot, flags, -1, 0);
   if (result == MAP_FAILED) {
+    XELOGE("mmap({:#x}, {}) failed: {}",
+           reinterpret_cast<uintptr_t>(base_address), length, strerror(errno));
     return nullptr;
   } else {
     return result;
@@ -172,6 +202,9 @@ bool Protect(void* base_address, size_t length, PageAccess access,
   assert_null(out_old_access);
 
   uint32_t prot = ToPosixProtectFlags(access);
+#if XE_PLATFORM_MAC
+  AlignRangeToPage(base_address, length);
+#endif
   return mprotect(base_address, length, prot) == 0;
 }
 
@@ -226,9 +259,16 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,
   auto full_path = "/" / path;
   int ret = shm_open(full_path.c_str(), oflag, 0777);
   if (ret < 0) {
+    XELOGE("shm_open({}) failed: {}", full_path.string(), strerror(errno));
     return kFileMappingHandleInvalid;
   }
-  ftruncate64(ret, length);
+  if (ftruncate64(ret, length) != 0) {
+    XELOGE("ftruncate({}, {}) failed: {}", full_path.string(), length,
+           strerror(errno));
+    close(ret);
+    shm_unlink(full_path.c_str());
+    return kFileMappingHandleInvalid;
+  }
   return ret;
 #endif
 }

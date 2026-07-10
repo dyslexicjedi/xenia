@@ -51,6 +51,37 @@ enum VConst {
   VAbsMaskPS,
   VByteSwapMask,
   VQNaN,
+  V0001,
+  V3301,
+  V3331,
+  V3333,
+  VPackD3DCOLORSat,
+  VPackD3DCOLOR,
+  VUnpackD3DCOLOR,
+  VUnpackFLOAT16_2,
+  VUnpackFLOAT16_4,
+  VPackSHORT_Min,
+  VPackSHORT_Max,
+  VPackSHORT_2,
+  VPackSHORT_4,
+  VUnpackSHORT_2,
+  VUnpackSHORT_4,
+  VUnpackSHORT_Overflow,
+  VPackUINT_2101010_MinUnpacked,
+  VPackUINT_2101010_MaxUnpacked,
+  VPackUINT_2101010_MaskUnpacked,
+  VPackUINT_2101010_MaskPacked,
+  VPackUINT_2101010_Shift,
+  VUnpackUINT_2101010_Overflow,
+  VPackULONG_4202020_MinUnpacked,
+  VPackULONG_4202020_MaxUnpacked,
+  VPackULONG_4202020_MaskUnpacked,
+  VPackULONG_4202020_PermuteXZ,
+  VPackULONG_4202020_PermuteYW,
+  VUnpackULONG_4202020_Permute,
+  VUnpackULONG_4202020_Overflow,
+  VSwapWordMask,
+  VPermuteByteMask,
   V_COUNT,
 };
 
@@ -141,6 +172,7 @@ class A64Emitter : public Xbyak_aarch64::CodeGenerator {
   void MovConst(const WReg& dest, uint32_t v);
 
   uintptr_t GetVConstPtr(VConst id) const;
+  void LoadVConst(const QReg& dest, VConst id);
   void LoadConstantV(const QReg& dest, float v);
   void LoadConstantV(const QReg& dest, double v);
   void LoadConstantV(const QReg& dest, const vec128_t& v);

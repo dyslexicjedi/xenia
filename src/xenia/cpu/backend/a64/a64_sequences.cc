@@ -1381,6 +1381,9 @@ static int anchor_memory_dest = anchor_memory;
 extern volatile int anchor_fpu;
 static int anchor_fpu_dest = anchor_fpu;
 
+extern volatile int anchor_vector;
+static int anchor_vector_dest = anchor_vector;
+
 bool SelectSequence(A64Emitter* e, const Instr* i, const Instr** new_tail) {
   const InstrKey key(i);
   auto it = sequence_table().find(key);

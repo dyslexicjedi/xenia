@@ -508,6 +508,57 @@ static const vec128_t v_consts[VConst::V_COUNT] = {
     /* VByteSwapMask  */
     vec128i(0x00010203u, 0x04050607u, 0x08090A0Bu, 0x0C0D0E0Fu),
     /* VQNaN          */ vec128i(0x7FC00000u),
+    /* V0001          */ vec128f(0.0f, 0.0f, 0.0f, 1.0f),
+    /* V3301          */ vec128f(3.0f, 3.0f, 0.0f, 1.0f),
+    /* V3331          */ vec128f(3.0f, 3.0f, 3.0f, 1.0f),
+    /* V3333          */ vec128f(3.0f, 3.0f, 3.0f, 3.0f),
+    /* VPackD3DCOLORSat */ vec128i(0x404000FFu),
+    /* VPackD3DCOLOR  */
+    vec128i(0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0x0C000408u),
+    /* VUnpackD3DCOLOR */
+    vec128i(0xFFFFFF0Eu, 0xFFFFFF0Du, 0xFFFFFF0Cu, 0xFFFFFF0Fu),
+    /* VUnpackFLOAT16_2 */
+    vec128i(0x0D0C0F0Eu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu),
+    /* VUnpackFLOAT16_4 */
+    vec128i(0x09080B0Au, 0x0D0C0F0Eu, 0xFFFFFFFFu, 0xFFFFFFFFu),
+    /* VPackSHORT_Min */ vec128i(0x403F8001u),
+    /* VPackSHORT_Max */ vec128i(0x40407FFFu),
+    /* VPackSHORT_2   */
+    vec128i(0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0x01000504u),
+    /* VPackSHORT_4   */
+    vec128i(0xFFFFFFFFu, 0xFFFFFFFFu, 0x01000504u, 0x09080D0Cu),
+    /* VUnpackSHORT_2 */
+    vec128i(0xFFFF0F0Eu, 0xFFFF0D0Cu, 0xFFFFFFFFu, 0xFFFFFFFFu),
+    /* VUnpackSHORT_4 */
+    vec128i(0xFFFF0B0Au, 0xFFFF0908u, 0xFFFF0F0Eu, 0xFFFF0D0Cu),
+    /* VUnpackSHORT_Overflow */ vec128i(0x403F8000u),
+    /* VPackUINT_2101010_MinUnpacked */
+    vec128i(0x403FFE01u, 0x403FFE01u, 0x403FFE01u, 0x40400000u),
+    /* VPackUINT_2101010_MaxUnpacked */
+    vec128i(0x404001FFu, 0x404001FFu, 0x404001FFu, 0x40400003u),
+    /* VPackUINT_2101010_MaskUnpacked */
+    vec128i(0x3FFu, 0x3FFu, 0x3FFu, 0x3u),
+    /* VPackUINT_2101010_MaskPacked */
+    vec128i(0x3FFu, 0x3FFu << 10, 0x3FFu << 20, 0x3u << 30),
+    /* VPackUINT_2101010_Shift */ vec128i(0, 10, 20, 30),
+    /* VUnpackUINT_2101010_Overflow */ vec128i(0x403FFE00u),
+    /* VPackULONG_4202020_MinUnpacked */
+    vec128i(0x40380001u, 0x40380001u, 0x40380001u, 0x40400000u),
+    /* VPackULONG_4202020_MaxUnpacked */
+    vec128i(0x4047FFFFu, 0x4047FFFFu, 0x4047FFFFu, 0x4040000Fu),
+    /* VPackULONG_4202020_MaskUnpacked */
+    vec128i(0xFFFFFu, 0xFFFFFu, 0xFFFFFu, 0xFu),
+    /* VPackULONG_4202020_PermuteXZ */
+    vec128i(0xFFFFFFFFu, 0xFFFFFFFFu, 0x0A0908FFu, 0xFF020100u),
+    /* VPackULONG_4202020_PermuteYW */
+    vec128i(0xFFFFFFFFu, 0xFFFFFFFFu, 0x0CFFFF06u, 0x0504FFFFu),
+    /* VUnpackULONG_4202020_Permute */
+    vec128i(0xFF0E0D0Cu, 0xFF0B0A09u, 0xFF080F0Eu, 0xFFFFFF0Bu),
+    /* VUnpackULONG_4202020_Overflow */ vec128i(0x40380000u),
+    /* VSwapWordMask  */
+    vec128i(0x03030303u, 0x03030303u, 0x03030303u, 0x03030303u),
+    /* VPermuteByteMask */
+    vec128i(0x1F1F1F1Fu, 0x1F1F1F1Fu, 0x1F1F1F1Fu, 0x1F1F1F1Fu),
 };
 
 // First location to try and place constants. Must be above the 4 GB
@@ -542,6 +593,11 @@ void A64Emitter::FreeConstData(uintptr_t data) {
 
 uintptr_t A64Emitter::GetVConstPtr(VConst id) const {
   return backend_->emitter_data() + sizeof(vec128_t) * id;
+}
+
+void A64Emitter::LoadVConst(const QReg& dest, VConst id) {
+  MovConst(x17, GetVConstPtr(id));
+  ldr(dest, ptr(x17));
 }
 
 void A64Emitter::LoadConstantV(const QReg& dest,

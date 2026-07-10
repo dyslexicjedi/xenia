@@ -10,7 +10,10 @@
 #include "xenia/cpu/backend/a64/a64_assembler.h"
 
 #include <climits>
+#include <cstring>
 
+#include "third_party/capstone/include/capstone/arm64.h"
+#include "third_party/capstone/include/capstone/capstone.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/reset_scope.h"
 #include "xenia/base/string.h"
@@ -31,12 +34,22 @@ namespace a64 {
 using xe::cpu::hir::HIRBuilder;
 
 A64Assembler::A64Assembler(A64Backend* backend)
-    : Assembler(backend), a64_backend_(backend) {}
+    : Assembler(backend), a64_backend_(backend) {
+  if (cs_open(CS_ARCH_ARM64, CS_MODE_ARM, &capstone_handle_) != CS_ERR_OK) {
+    assert_always("Failed to initialize ARM64 capstone");
+  }
+  cs_option(capstone_handle_, CS_OPT_DETAIL, CS_OPT_OFF);
+  cs_option(capstone_handle_, CS_OPT_SKIPDATA, CS_OPT_OFF);
+}
 
 A64Assembler::~A64Assembler() {
   // Emitter must be freed before the allocator.
   emitter_.reset();
   allocator_.reset();
+
+  if (capstone_handle_) {
+    cs_close(&capstone_handle_);
+  }
 }
 
 bool A64Assembler::Initialize() {
@@ -97,13 +110,16 @@ void A64Assembler::DumpMachineCode(
   if (source_map.empty()) {
     return;
   }
-  // TODO(macos): ARM64 disassembly via capstone's AArch64 engine (needs to be
-  // enabled in third_party/capstone.lua). Raw words for now.
   auto source_map_index = 0;
   uint32_t next_code_offset = source_map[0].code_offset;
-  const uint32_t* code_words = reinterpret_cast<uint32_t*>(machine_code);
-  for (size_t offset = 0; offset < code_size; offset += 4) {
-    if (offset >= next_code_offset &&
+
+  const auto code_base = reinterpret_cast<const uint8_t*>(machine_code);
+  const uint8_t* code_ptr = code_base;
+  size_t remaining_code_size = code_size;
+  uint64_t address = reinterpret_cast<uint64_t>(machine_code);
+  while (remaining_code_size) {
+    auto code_offset = static_cast<uint32_t>(code_ptr - code_base);
+    if (code_offset >= next_code_offset &&
         source_map_index < source_map.size()) {
       auto& source_map_entry = source_map[source_map_index];
       str->AppendFormat("{:08X} ", source_map_entry.guest_address);
@@ -114,9 +130,26 @@ void A64Assembler::DumpMachineCode(
     } else {
       str->Append("         ");
     }
-    str->AppendFormat("{:08X}      .word {:08X}\n",
-                      uint32_t(uint64_t(machine_code) + offset),
-                      code_words[offset / 4]);
+
+    cs_insn insn = {};
+    if (cs_disasm_iter(capstone_handle_, &code_ptr, &remaining_code_size,
+                       &address, &insn)) {
+      str->AppendFormat("{:016X}  {:<7} {}\n", insn.address, insn.mnemonic,
+                        insn.op_str);
+    } else {
+      // ARM64 instructions are always four bytes. Keep dumps useful for
+      // permanently undefined encodings (including our breakpoint marker)
+      // that Capstone deliberately refuses to decode.
+      if (remaining_code_size < sizeof(uint32_t)) {
+        break;
+      }
+      uint32_t word;
+      std::memcpy(&word, code_ptr, sizeof(word));
+      str->AppendFormat("{:016X}  .word   {:08X}\n", address, word);
+      code_ptr += sizeof(word);
+      remaining_code_size -= sizeof(word);
+      address += sizeof(word);
+    }
   }
 }
 

@@ -7,12 +7,14 @@ project("xenia-cpu-backend-a64")
   kind("StaticLib")
   language("C++")
   links({
+    "capstone",
     "fmt",
     "xbyak_aarch64",
     "xenia-base",
     "xenia-cpu",
   })
   includedirs({
+    project_root.."/third_party/capstone/include",
     project_root.."/third_party/xbyak_aarch64/xbyak_aarch64",
   })
   local_platform_files()

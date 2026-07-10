@@ -13,8 +13,11 @@
 
 #include <cstring>
 
+#include "third_party/capstone/include/capstone/arm64.h"
+#include "third_party/capstone/include/capstone/capstone.h"
 #include "xenia/base/exception_handler.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/memory.h"
 #include "xenia/cpu/backend/a64/a64_assembler.h"
 #include "xenia/cpu/backend/a64/a64_code_cache.h"
 #include "xenia/cpu/backend/a64/a64_emitter.h"
@@ -50,9 +53,18 @@ class A64ThunkEmitter : public A64Emitter {
   void EmitLoadNonvolatileRegs();
 };
 
-A64Backend::A64Backend() : Backend() {}
+A64Backend::A64Backend() : Backend() {
+  if (cs_open(CS_ARCH_ARM64, CS_MODE_ARM, &capstone_handle_) != CS_ERR_OK) {
+    assert_always("Failed to initialize ARM64 capstone");
+  }
+  cs_option(capstone_handle_, CS_OPT_DETAIL, CS_OPT_ON);
+  cs_option(capstone_handle_, CS_OPT_SKIPDATA, CS_OPT_OFF);
+}
 
 A64Backend::~A64Backend() {
+  if (capstone_handle_) {
+    cs_close(&capstone_handle_);
+  }
   A64Emitter::FreeConstData(emitter_data_);
   ExceptionHandler::Uninstall(&ExceptionCallbackThunk, this);
 }
@@ -123,10 +135,200 @@ std::unique_ptr<GuestFunction> A64Backend::CreateGuestFunction(
 
 uint64_t A64Backend::CalculateNextHostInstruction(ThreadDebugInfo* thread_info,
                                                   uint64_t current_pc) {
-  // TODO(macos): decode branches (B/BL/BR/BLR/RET/CBZ/CBNZ/TBZ/TBNZ/B.cond)
-  // for debugger single-step. All ARM64 instructions are 4 bytes, so this is
-  // correct for straight-line code.
-  return current_pc + 4;
+  auto read_register = [thread_info](arm64_reg reg) -> uint64_t {
+    auto& context = thread_info->host_context;
+    if (reg >= ARM64_REG_X0 && reg <= ARM64_REG_X28) {
+      return context.x[reg - ARM64_REG_X0];
+    }
+    if (reg >= ARM64_REG_W0 && reg <= ARM64_REG_W30) {
+      return static_cast<uint32_t>(context.x[reg - ARM64_REG_W0]);
+    }
+    switch (reg) {
+      case ARM64_REG_X29:
+        return context.x[29];
+      case ARM64_REG_X30:
+        return context.x[30];
+      case ARM64_REG_SP:
+        return context.sp;
+      case ARM64_REG_WSP:
+        return static_cast<uint32_t>(context.sp);
+      case ARM64_REG_XZR:
+      case ARM64_REG_WZR:
+        return 0;
+      default:
+        assert_unhandled_case(reg);
+        return 0;
+    }
+  };
+
+  auto test_condition = [thread_info](arm64_cc condition) {
+    const uint64_t pstate = thread_info->host_context.pstate;
+    const bool n = (pstate & (UINT64_C(1) << 31)) != 0;
+    const bool z = (pstate & (UINT64_C(1) << 30)) != 0;
+    const bool c = (pstate & (UINT64_C(1) << 29)) != 0;
+    const bool v = (pstate & (UINT64_C(1) << 28)) != 0;
+    switch (condition) {
+      case ARM64_CC_EQ:
+        return z;
+      case ARM64_CC_NE:
+        return !z;
+      case ARM64_CC_HS:
+        return c;
+      case ARM64_CC_LO:
+        return !c;
+      case ARM64_CC_MI:
+        return n;
+      case ARM64_CC_PL:
+        return !n;
+      case ARM64_CC_VS:
+        return v;
+      case ARM64_CC_VC:
+        return !v;
+      case ARM64_CC_HI:
+        return c && !z;
+      case ARM64_CC_LS:
+        return !c || z;
+      case ARM64_CC_GE:
+        return n == v;
+      case ARM64_CC_LT:
+        return n != v;
+      case ARM64_CC_GT:
+        return !z && n == v;
+      case ARM64_CC_LE:
+        return z || n != v;
+      case ARM64_CC_AL:
+      case ARM64_CC_NV:
+      case ARM64_CC_INVALID:
+        return true;
+      default:
+        assert_unhandled_case(condition);
+        return false;
+    }
+  };
+
+  auto machine_code_ptr = reinterpret_cast<const uint8_t*>(current_pc);
+  size_t remaining_machine_code_size = sizeof(uint32_t);
+  uint64_t host_address = current_pc;
+  cs_insn insn = {};
+  cs_detail all_detail = {};
+  insn.detail = &all_detail;
+  if (!cs_disasm_iter(capstone_handle_, &machine_code_ptr,
+                      &remaining_machine_code_size, &host_address, &insn)) {
+    return current_pc + sizeof(uint32_t);
+  }
+
+  auto& detail = all_detail.arm64;
+  const uint64_t fallthrough_pc = current_pc + insn.size;
+  switch (insn.id) {
+    default:
+      return fallthrough_pc;
+    case ARM64_INS_B:
+      assert_true(detail.op_count == 1);
+      assert_true(detail.operands[0].type == ARM64_OP_IMM);
+      return test_condition(detail.cc)
+                 ? static_cast<uint64_t>(detail.operands[0].imm)
+                 : fallthrough_pc;
+    case ARM64_INS_BL:
+      assert_true(detail.op_count == 1);
+      assert_true(detail.operands[0].type == ARM64_OP_IMM);
+      return static_cast<uint64_t>(detail.operands[0].imm);
+    case ARM64_INS_BR:
+    case ARM64_INS_BLR:
+      assert_true(detail.op_count == 1);
+      assert_true(detail.operands[0].type == ARM64_OP_REG);
+      return read_register(detail.operands[0].reg);
+    case ARM64_INS_RET:
+      assert_true(detail.op_count <= 1);
+      if (!detail.op_count) {
+        return thread_info->host_context.x[30];
+      }
+      assert_true(detail.operands[0].type == ARM64_OP_REG);
+      return read_register(detail.operands[0].reg);
+    case ARM64_INS_CBZ:
+    case ARM64_INS_CBNZ: {
+      assert_true(detail.op_count == 2);
+      assert_true(detail.operands[0].type == ARM64_OP_REG);
+      assert_true(detail.operands[1].type == ARM64_OP_IMM);
+      const bool is_zero = read_register(detail.operands[0].reg) == 0;
+      const bool take_branch =
+          insn.id == ARM64_INS_CBZ ? is_zero : !is_zero;
+      return take_branch ? static_cast<uint64_t>(detail.operands[1].imm)
+                         : fallthrough_pc;
+    }
+    case ARM64_INS_TBZ:
+    case ARM64_INS_TBNZ: {
+      assert_true(detail.op_count == 3);
+      assert_true(detail.operands[0].type == ARM64_OP_REG);
+      assert_true(detail.operands[1].type == ARM64_OP_IMM);
+      assert_true(detail.operands[2].type == ARM64_OP_IMM);
+      const uint64_t value = read_register(detail.operands[0].reg);
+      const auto bit = static_cast<uint32_t>(detail.operands[1].imm);
+      const bool is_zero = (value & (UINT64_C(1) << bit)) == 0;
+      const bool take_branch =
+          insn.id == ARM64_INS_TBZ ? is_zero : !is_zero;
+      return take_branch ? static_cast<uint64_t>(detail.operands[2].imm)
+                         : fallthrough_pc;
+    }
+  }
+}
+
+namespace {
+
+// UDF #0xDEAD. A permanently undefined instruction takes the already-routed
+// SIGILL path on Darwin, unlike BRK (SIGTRAP), and the immediate makes it
+// distinguishable from zero-filled code-cache alignment padding.
+constexpr uint32_t kBreakpointInstruction = UINT32_C(0x001BD5A0);
+
+void PatchBreakpointInstruction(uint64_t host_address, uint32_t instruction) {
+  auto ptr = reinterpret_cast<void*>(host_address);
+  xe::memory::SetJitThreadWriteAccess(true);
+  std::memcpy(ptr, &instruction, sizeof(instruction));
+  xe::memory::SetJitThreadWriteAccess(false);
+  xe::memory::FlushInstructionCache(ptr, sizeof(instruction));
+}
+
+}  // namespace
+
+void A64Backend::InstallBreakpoint(Breakpoint* breakpoint) {
+  breakpoint->ForEachHostAddress([breakpoint](uint64_t host_address) {
+    uint32_t original_instruction;
+    std::memcpy(&original_instruction, reinterpret_cast<void*>(host_address),
+                sizeof(original_instruction));
+    assert_true(original_instruction != kBreakpointInstruction);
+    PatchBreakpointInstruction(host_address, kBreakpointInstruction);
+    breakpoint->backend_data().emplace_back(host_address,
+                                            original_instruction);
+  });
+}
+
+void A64Backend::InstallBreakpoint(Breakpoint* breakpoint, Function* fn) {
+  assert_true(breakpoint->address_type() == Breakpoint::AddressType::kGuest);
+  assert_true(fn->is_guest());
+  auto guest_function = reinterpret_cast<cpu::GuestFunction*>(fn);
+  auto host_address =
+      guest_function->MapGuestAddressToMachineCode(breakpoint->guest_address());
+  if (!host_address) {
+    assert_always();
+    return;
+  }
+
+  uint32_t original_instruction;
+  std::memcpy(&original_instruction, reinterpret_cast<void*>(host_address),
+              sizeof(original_instruction));
+  assert_true(original_instruction != kBreakpointInstruction);
+  PatchBreakpointInstruction(host_address, kBreakpointInstruction);
+  breakpoint->backend_data().emplace_back(host_address, original_instruction);
+}
+
+void A64Backend::UninstallBreakpoint(Breakpoint* breakpoint) {
+  for (auto& pair : breakpoint->backend_data()) {
+    uint32_t instruction;
+    std::memcpy(&instruction, reinterpret_cast<void*>(pair.first),
+                sizeof(instruction));
+    assert_true(instruction == kBreakpointInstruction);
+    PatchBreakpointInstruction(pair.first, static_cast<uint32_t>(pair.second));
+  }
+  breakpoint->backend_data().clear();
 }
 
 bool A64Backend::ExceptionCallbackThunk(Exception* ex, void* data) {
@@ -142,9 +344,14 @@ bool A64Backend::ExceptionCallback(Exception* ex) {
     return false;
   }
 
-  // TODO(macos): breakpoint support (BRK #0 delivers SIGTRAP on Darwin, which
-  // the exception handler doesn't route yet).
-  return false;
+  uint32_t instruction;
+  std::memcpy(&instruction, reinterpret_cast<void*>(ex->pc()),
+              sizeof(instruction));
+  if (instruction != kBreakpointInstruction) {
+    return false;
+  }
+
+  return processor()->OnThreadBreakpointHit(ex);
 }
 
 A64ThunkEmitter::A64ThunkEmitter(A64Backend* backend, XbyakAllocator* allocator)

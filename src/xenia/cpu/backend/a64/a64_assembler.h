@@ -48,6 +48,7 @@ class A64Assembler : public Assembler {
   A64Backend* a64_backend_ = nullptr;
   std::unique_ptr<XbyakAllocator> allocator_;
   std::unique_ptr<A64Emitter> emitter_;
+  uintptr_t capstone_handle_ = 0;
 
   StringBuffer string_buffer_;
 };

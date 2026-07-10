@@ -48,7 +48,14 @@ std::string Breakpoint::to_string() const {
     str += " " + functions[0]->name();
     return str;
   } else {
-    return std::string("x64 ") +
+#if XE_ARCH_AMD64
+    constexpr const char* kHostArchitectureName = "x64 ";
+#elif XE_ARCH_ARM64
+    constexpr const char* kHostArchitectureName = "a64 ";
+#else
+    constexpr const char* kHostArchitectureName = "host ";
+#endif
+    return std::string(kHostArchitectureName) +
            xe::string_util::to_hex_string(uint64_t(host_address()));
   }
 }

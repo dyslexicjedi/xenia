@@ -7,6 +7,7 @@ project("capstone")
     "CAPSTONE_X86_ATT_DISABLE",
     "CAPSTONE_DIET_NO",
     "CAPSTONE_X86_REDUCE_NO",
+    "CAPSTONE_HAS_ARM64",
     "CAPSTONE_HAS_X86",
     "CAPSTONE_USE_SYS_DYN_MEM",
     "_LIB",
@@ -36,8 +37,13 @@ project("capstone")
     "capstone/arch/X86/*.c",
     "capstone/arch/X86/*.h",
     "capstone/arch/X86/*.inc",
+
+    "capstone/arch/AArch64/*.c",
+    "capstone/arch/AArch64/*.h",
+    "capstone/arch/AArch64/*.inc",
   })
   force_compile_as_c({
     "capstone/**.c",
+    "capstone/arch/AArch64/**.c",
     "capstone/arch/X86/**.c",
   })

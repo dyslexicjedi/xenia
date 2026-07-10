@@ -60,9 +60,15 @@ class A64Backend : public Backend {
   uint64_t CalculateNextHostInstruction(ThreadDebugInfo* thread_info,
                                         uint64_t current_pc) override;
 
+  void InstallBreakpoint(Breakpoint* breakpoint) override;
+  void InstallBreakpoint(Breakpoint* breakpoint, Function* fn) override;
+  void UninstallBreakpoint(Breakpoint* breakpoint) override;
+
  private:
   static bool ExceptionCallbackThunk(Exception* ex, void* data);
   bool ExceptionCallback(Exception* ex);
+
+  uintptr_t capstone_handle_ = 0;
 
   std::unique_ptr<A64CodeCache> code_cache_;
   uintptr_t emitter_data_ = 0;

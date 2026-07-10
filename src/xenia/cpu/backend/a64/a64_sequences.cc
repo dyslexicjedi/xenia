@@ -691,7 +691,7 @@ struct SHL_I8 : Sequence<SHL_I8, I<OPCODE_SHL, I8Op, I8Op, I8Op>> {
     }
   }
 };
-struct SHL_I16 : Sequence<SHL_I16, I<OPCODE_SHL, I16Op, I16Op, I16Op>> {
+struct SHL_I16 : Sequence<SHL_I16, I<OPCODE_SHL, I16Op, I16Op, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     if (i.src2.is_constant) {
       e.lsl(i.dest, i.src1.reg(), i.src2.constant() & 0xF);
@@ -741,7 +741,7 @@ struct SHR_I8 : Sequence<SHR_I8, I<OPCODE_SHR, I8Op, I8Op, I8Op>> {
     }
   }
 };
-struct SHR_I16 : Sequence<SHR_I16, I<OPCODE_SHR, I16Op, I16Op, I16Op>> {
+struct SHR_I16 : Sequence<SHR_I16, I<OPCODE_SHR, I16Op, I16Op, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     auto src1 = GetWithConst(e, i.src1, WReg(0));
     e.uxth(WReg(0), src1);
@@ -793,7 +793,7 @@ struct SHA_I8 : Sequence<SHA_I8, I<OPCODE_SHA, I8Op, I8Op, I8Op>> {
     }
   }
 };
-struct SHA_I16 : Sequence<SHA_I16, I<OPCODE_SHA, I16Op, I16Op, I16Op>> {
+struct SHA_I16 : Sequence<SHA_I16, I<OPCODE_SHA, I16Op, I16Op, I8Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
     auto src1 = GetWithConst(e, i.src1, WReg(0));
     e.sxth(WReg(0), src1);

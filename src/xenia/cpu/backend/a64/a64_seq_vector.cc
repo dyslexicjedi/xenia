@@ -743,6 +743,237 @@ struct LOG2_V128 : Sequence<LOG2_V128, I<OPCODE_LOG2, V128Op, V128Op>> {
 EMITTER_OPCODE_TABLE(OPCODE_LOG2, LOG2_V128);
 
 // ============================================================================
+// OPCODE_LOAD_VECTOR_SHL / OPCODE_LOAD_VECTOR_SHR
+// ============================================================================
+static const vec128_t lvsl_table[16] = {
+    vec128b(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+    vec128b(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16),
+    vec128b(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17),
+    vec128b(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18),
+    vec128b(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19),
+    vec128b(5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20),
+    vec128b(6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21),
+    vec128b(7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22),
+    vec128b(8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23),
+    vec128b(9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24),
+    vec128b(10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25),
+    vec128b(11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26),
+    vec128b(12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27),
+    vec128b(13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28),
+    vec128b(14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29),
+    vec128b(15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30),
+};
+static const vec128_t lvsr_table[16] = {
+    vec128b(16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31),
+    vec128b(15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30),
+    vec128b(14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29),
+    vec128b(13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28),
+    vec128b(12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27),
+    vec128b(11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26),
+    vec128b(10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25),
+    vec128b(9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24),
+    vec128b(8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23),
+    vec128b(7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22),
+    vec128b(6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21),
+    vec128b(5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20),
+    vec128b(4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19),
+    vec128b(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18),
+    vec128b(2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17),
+    vec128b(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16),
+};
+
+namespace {
+
+void EmitLoadShiftTable(A64Emitter& e, const V128Op& dest, const I8Op& sh,
+                        const vec128_t* table) {
+  if (sh.is_constant) {
+    e.MovConst(XReg(0), reinterpret_cast<uintptr_t>(&table[sh.constant() &
+                                                           0xF]));
+    e.ldr(dest.reg(), ptr(XReg(0)));
+  } else {
+    e.and_(WReg(1), sh, 0xF);
+    e.lsl(WReg(1), WReg(1), 4);
+    e.MovConst(XReg(0), reinterpret_cast<uintptr_t>(table));
+    e.ldr(dest.reg(), ptr(XReg(0), XReg(1)));
+  }
+}
+
+}  // namespace
+
+struct LOAD_VECTOR_SHL_I8
+    : Sequence<LOAD_VECTOR_SHL_I8, I<OPCODE_LOAD_VECTOR_SHL, V128Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitLoadShiftTable(e, i.dest, i.src1, lvsl_table);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_LOAD_VECTOR_SHL, LOAD_VECTOR_SHL_I8);
+
+struct LOAD_VECTOR_SHR_I8
+    : Sequence<LOAD_VECTOR_SHR_I8, I<OPCODE_LOAD_VECTOR_SHR, V128Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitLoadShiftTable(e, i.dest, i.src1, lvsr_table);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_LOAD_VECTOR_SHR, LOAD_VECTOR_SHR_I8);
+
+// ============================================================================
+// OPCODE_VECTOR_SHL / OPCODE_VECTOR_SHR / OPCODE_VECTOR_SHA /
+// OPCODE_VECTOR_ROTATE_LEFT
+// ============================================================================
+// NEON USHL/SSHL shift each lane by a per-lane *signed* count (negative =
+// right), so all four ops reduce to masking the count and (for right
+// shifts) negating it. PPC semantics mask the count to the element width.
+namespace {
+
+enum class VecShiftKind { kShl, kShr, kSha, kRotate };
+
+template <typename VELEM>
+void EmitVecShiftT(A64Emitter& e, const QReg& dest, const QReg& src1,
+                   const QReg& src2, uint32_t bits, VecShiftKind kind) {
+  const VELEM v2(2), v3(3), v4(4);
+  const VELEM a(src1.getIdx());
+  const VELEM b(src2.getIdx());
+  const VELEM d(dest.getIdx());
+  const VReg16B v2_b(2), v4_b(4), b_b(src2.getIdx());
+  // v2 = shift counts masked to the element width.
+  e.movi(v2, bits - 1);
+  e.and_(v2_b, b_b, v2_b);
+  switch (kind) {
+    case VecShiftKind::kShl:
+      e.ushl(d, a, v2);
+      break;
+    case VecShiftKind::kShr:
+      e.neg(v2, v2);
+      e.ushl(d, a, v2);
+      break;
+    case VecShiftKind::kSha:
+      e.neg(v2, v2);
+      e.sshl(d, a, v2);
+      break;
+    case VecShiftKind::kRotate:
+      // (src1 << n) | (src1 >> (bits - n)); n == 0 degenerates cleanly
+      // because a right shift by the full width gives zero.
+      e.ushl(v3, a, v2);
+      e.movi(v4, bits);
+      e.sub(v2, v2, v4);
+      e.ushl(v2, a, v2);
+      e.orr(VReg16B(d.getIdx()), VReg16B(3), VReg16B(2));
+      break;
+  }
+}
+
+template <typename ARGS>
+void EmitVecShift(A64Emitter& e, const ARGS& i, VecShiftKind kind) {
+  const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+  const QReg src2 = GetVWithConst(e, i.src2, QReg(1));
+  const QReg dest = i.dest.reg();
+  switch (i.instr->flags) {
+    case INT8_TYPE:
+      EmitVecShiftT<VReg16B>(e, dest, src1, src2, 8, kind);
+      break;
+    case INT16_TYPE:
+      EmitVecShiftT<VReg8H>(e, dest, src1, src2, 16, kind);
+      break;
+    case INT32_TYPE:
+      EmitVecShiftT<VReg4S>(e, dest, src1, src2, 32, kind);
+      break;
+    default:
+      assert_unhandled_case(i.instr->flags);
+      break;
+  }
+}
+
+}  // namespace
+
+struct VECTOR_SHL_V128
+    : Sequence<VECTOR_SHL_V128, I<OPCODE_VECTOR_SHL, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitVecShift(e, i, VecShiftKind::kShl);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_SHL, VECTOR_SHL_V128);
+
+struct VECTOR_SHR_V128
+    : Sequence<VECTOR_SHR_V128, I<OPCODE_VECTOR_SHR, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitVecShift(e, i, VecShiftKind::kShr);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_SHR, VECTOR_SHR_V128);
+
+struct VECTOR_SHA_V128
+    : Sequence<VECTOR_SHA_V128, I<OPCODE_VECTOR_SHA, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitVecShift(e, i, VecShiftKind::kSha);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_SHA, VECTOR_SHA_V128);
+
+struct VECTOR_ROTATE_LEFT_V128
+    : Sequence<VECTOR_ROTATE_LEFT_V128,
+               I<OPCODE_VECTOR_ROTATE_LEFT, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitVecShift(e, i, VecShiftKind::kRotate);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_ROTATE_LEFT, VECTOR_ROTATE_LEFT_V128);
+
+// ============================================================================
+// OPCODE_SHL / OPCODE_SHR (whole-vector bit shifts, vsl/vsr)
+// ============================================================================
+// Shift the full 128-bit value by 0-7 bits through a host helper, same as
+// x64. The byte loop is endian-flipped (^0x3) like the vec128 layout.
+struct SHL_V128 : Sequence<SHL_V128, I<OPCODE_SHL, V128Op, V128Op, I8Op>> {
+  static void EmulateShlV128(void*, vec128_t* v, uint64_t src2) {
+    const uint8_t shamt = src2 & 0x7;
+    vec128_t value = *v;
+    for (int k = 0; k < 15; ++k) {
+      value.u8[k ^ 0x3] = (value.u8[k ^ 0x3] << shamt) |
+                          (value.u8[(k + 1) ^ 0x3] >> (8 - shamt));
+    }
+    value.u8[15 ^ 0x3] = value.u8[15 ^ 0x3] << shamt;
+    *v = value;
+  }
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    StashVForCall(e, src1);
+    if (i.src2.is_constant) {
+      e.MovConst(WReg(2), uint32_t(i.src2.constant()));
+    } else {
+      e.mov(WReg(2), i.src2);
+    }
+    e.CallNativeSafe(reinterpret_cast<void*>(EmulateShlV128));
+    e.ldr(i.dest, ptr(e.sp, kVStashOffset));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_SHL, SHL_V128);
+
+struct SHR_V128 : Sequence<SHR_V128, I<OPCODE_SHR, V128Op, V128Op, I8Op>> {
+  static void EmulateShrV128(void*, vec128_t* v, uint64_t src2) {
+    const uint8_t shamt = src2 & 0x7;
+    vec128_t value = *v;
+    for (int k = 15; k > 0; --k) {
+      value.u8[k ^ 0x3] = (value.u8[k ^ 0x3] >> shamt) |
+                          (value.u8[(k - 1) ^ 0x3] << (8 - shamt));
+    }
+    value.u8[0 ^ 0x3] = value.u8[0 ^ 0x3] >> shamt;
+    *v = value;
+  }
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    StashVForCall(e, src1);
+    if (i.src2.is_constant) {
+      e.MovConst(WReg(2), uint32_t(i.src2.constant()));
+    } else {
+      e.mov(WReg(2), i.src2);
+    }
+    e.CallNativeSafe(reinterpret_cast<void*>(EmulateShrV128));
+    e.ldr(i.dest, ptr(e.sp, kVStashOffset));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_SHR, SHR_V128);
+
+// ============================================================================
 // OPCODE_DID_SATURATE
 // ============================================================================
 struct DID_SATURATE

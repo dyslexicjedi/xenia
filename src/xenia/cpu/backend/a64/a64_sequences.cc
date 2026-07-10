@@ -70,6 +70,18 @@ struct SOURCE_OFFSET
 };
 EMITTER_OPCODE_TABLE(OPCODE_SOURCE_OFFSET, SOURCE_OFFSET);
 
+
+// Returns the register holding src's value, materializing v128 constants
+// into temp (v0/v1 scratch).
+static const QReg GetVWithConst(A64Emitter& e, const V128Op& src,
+                                const QReg& temp) {
+  if (src.is_constant) {
+    e.LoadConstantV(temp, src.constant());
+    return temp;
+  }
+  return src.reg();
+}
+
 // ============================================================================
 // OPCODE_ASSIGN
 // ============================================================================
@@ -421,10 +433,9 @@ struct ADD_F64 : Sequence<ADD_F64, I<OPCODE_ADD, F64Op, F64Op, F64Op>> {
 };
 struct ADD_V128 : Sequence<ADD_V128, I<OPCODE_ADD, V128Op, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant && !i.src2.is_constant);
     const VReg4S dest(i.dest.reg().getIdx());
-    const VReg4S src1(i.src1.reg().getIdx());
-    const VReg4S src2(i.src2.reg().getIdx());
+    const VReg4S src1(GetVWithConst(e, i.src1, QReg(0)).getIdx());
+    const VReg4S src2(GetVWithConst(e, i.src2, QReg(1)).getIdx());
     e.fadd(dest, src1, src2);
   }
 };
@@ -472,10 +483,9 @@ struct SUB_F64 : Sequence<SUB_F64, I<OPCODE_SUB, F64Op, F64Op, F64Op>> {
 };
 struct SUB_V128 : Sequence<SUB_V128, I<OPCODE_SUB, V128Op, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant && !i.src2.is_constant);
     const VReg4S dest(i.dest.reg().getIdx());
-    const VReg4S src1(i.src1.reg().getIdx());
-    const VReg4S src2(i.src2.reg().getIdx());
+    const VReg4S src1(GetVWithConst(e, i.src1, QReg(0)).getIdx());
+    const VReg4S src2(GetVWithConst(e, i.src2, QReg(1)).getIdx());
     e.fsub(dest, src1, src2);
   }
 };
@@ -511,10 +521,9 @@ struct AND_I64 : Sequence<AND_I64, I<OPCODE_AND, I64Op, I64Op, I64Op>> {
 };
 struct AND_V128 : Sequence<AND_V128, I<OPCODE_AND, V128Op, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant && !i.src2.is_constant);
     const VReg16B dest(i.dest.reg().getIdx());
-    const VReg16B src1(i.src1.reg().getIdx());
-    const VReg16B src2(i.src2.reg().getIdx());
+    const VReg16B src1(GetVWithConst(e, i.src1, QReg(0)).getIdx());
+    const VReg16B src2(GetVWithConst(e, i.src2, QReg(1)).getIdx());
     e.and_(dest, src1, src2);
   }
 };
@@ -549,10 +558,9 @@ struct OR_I64 : Sequence<OR_I64, I<OPCODE_OR, I64Op, I64Op, I64Op>> {
 };
 struct OR_V128 : Sequence<OR_V128, I<OPCODE_OR, V128Op, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant && !i.src2.is_constant);
     const VReg16B dest(i.dest.reg().getIdx());
-    const VReg16B src1(i.src1.reg().getIdx());
-    const VReg16B src2(i.src2.reg().getIdx());
+    const VReg16B src1(GetVWithConst(e, i.src1, QReg(0)).getIdx());
+    const VReg16B src2(GetVWithConst(e, i.src2, QReg(1)).getIdx());
     e.orr(dest, src1, src2);
   }
 };
@@ -587,10 +595,9 @@ struct XOR_I64 : Sequence<XOR_I64, I<OPCODE_XOR, I64Op, I64Op, I64Op>> {
 };
 struct XOR_V128 : Sequence<XOR_V128, I<OPCODE_XOR, V128Op, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant && !i.src2.is_constant);
     const VReg16B dest(i.dest.reg().getIdx());
-    const VReg16B src1(i.src1.reg().getIdx());
-    const VReg16B src2(i.src2.reg().getIdx());
+    const VReg16B src1(GetVWithConst(e, i.src1, QReg(0)).getIdx());
+    const VReg16B src2(GetVWithConst(e, i.src2, QReg(1)).getIdx());
     e.eor(dest, src1, src2);
   }
 };
@@ -629,9 +636,8 @@ struct NOT_I64 : Sequence<NOT_I64, I<OPCODE_NOT, I64Op, I64Op>> {
 };
 struct NOT_V128 : Sequence<NOT_V128, I<OPCODE_NOT, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant);
     const VReg16B dest(i.dest.reg().getIdx());
-    const VReg16B src(i.src1.reg().getIdx());
+    const VReg16B src(GetVWithConst(e, i.src1, QReg(0)).getIdx());
     e.mvn(dest, src);
   }
 };
@@ -966,10 +972,9 @@ struct BYTE_SWAP_I64
 struct BYTE_SWAP_V128
     : Sequence<BYTE_SWAP_V128, I<OPCODE_BYTE_SWAP, V128Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant);
     // Swap bytes within each 32-bit element (x64's XMMByteSwapMask).
     const VReg16B dest_b(i.dest.reg().getIdx());
-    const VReg16B src_b(i.src1.reg().getIdx());
+    const VReg16B src_b(GetVWithConst(e, i.src1, QReg(0)).getIdx());
     e.rev32(dest_b, src_b);
   }
 };

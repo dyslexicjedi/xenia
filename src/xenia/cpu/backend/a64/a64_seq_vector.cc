@@ -10,6 +10,7 @@
 #include "xenia/cpu/backend/a64/a64_sequences.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "xenia/cpu/backend/a64/a64_op.h"
@@ -49,6 +50,697 @@ void StashVForCall(A64Emitter& e, const QReg& src) {
 }
 
 }  // namespace
+
+namespace {
+
+// Emits a binary v128 op with constants materialized into v0/v1.
+template <typename ARGS, typename FN>
+void EmitBinaryVOp(A64Emitter& e, const ARGS& i, FN&& fn) {
+  const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+  const QReg src2 = GetVWithConst(e, i.src2, QReg(1));
+  fn(e, i.dest.reg(), src1, src2);
+}
+
+}  // namespace
+
+// ============================================================================
+// OPCODE_VECTOR_ADD
+// ============================================================================
+struct VECTOR_ADD
+    : Sequence<VECTOR_ADD, I<OPCODE_VECTOR_ADD, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [&i](A64Emitter& e, const QReg& dest, const QReg& s1,
+                             const QReg& s2) {
+      const TypeName part_type = static_cast<TypeName>(i.instr->flags & 0xFF);
+      const uint32_t arithmetic_flags = i.instr->flags >> 8;
+      const bool is_unsigned = !!(arithmetic_flags & ARITHMETIC_UNSIGNED);
+      const bool saturate = !!(arithmetic_flags & ARITHMETIC_SATURATE);
+      const int d = dest.getIdx(), a = s1.getIdx(), b = s2.getIdx();
+      switch (part_type) {
+        case INT8_TYPE:
+          if (saturate) {
+            // TODO(benvanik): trace DID_SATURATE
+            if (is_unsigned) {
+              e.uqadd(VReg16B(d), VReg16B(a), VReg16B(b));
+            } else {
+              e.sqadd(VReg16B(d), VReg16B(a), VReg16B(b));
+            }
+          } else {
+            e.add(VReg16B(d), VReg16B(a), VReg16B(b));
+          }
+          break;
+        case INT16_TYPE:
+          if (saturate) {
+            if (is_unsigned) {
+              e.uqadd(VReg8H(d), VReg8H(a), VReg8H(b));
+            } else {
+              e.sqadd(VReg8H(d), VReg8H(a), VReg8H(b));
+            }
+          } else {
+            e.add(VReg8H(d), VReg8H(a), VReg8H(b));
+          }
+          break;
+        case INT32_TYPE:
+          if (saturate) {
+            if (is_unsigned) {
+              e.uqadd(VReg4S(d), VReg4S(a), VReg4S(b));
+            } else {
+              e.sqadd(VReg4S(d), VReg4S(a), VReg4S(b));
+            }
+          } else {
+            e.add(VReg4S(d), VReg4S(a), VReg4S(b));
+          }
+          break;
+        case FLOAT32_TYPE:
+          assert_false(is_unsigned);
+          assert_false(saturate);
+          e.fadd(VReg4S(d), VReg4S(a), VReg4S(b));
+          break;
+        default:
+          assert_unhandled_case(part_type);
+          break;
+      }
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_ADD, VECTOR_ADD);
+
+// ============================================================================
+// OPCODE_VECTOR_SUB
+// ============================================================================
+struct VECTOR_SUB
+    : Sequence<VECTOR_SUB, I<OPCODE_VECTOR_SUB, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [&i](A64Emitter& e, const QReg& dest, const QReg& s1,
+                             const QReg& s2) {
+      const TypeName part_type = static_cast<TypeName>(i.instr->flags & 0xFF);
+      const uint32_t arithmetic_flags = i.instr->flags >> 8;
+      const bool is_unsigned = !!(arithmetic_flags & ARITHMETIC_UNSIGNED);
+      const bool saturate = !!(arithmetic_flags & ARITHMETIC_SATURATE);
+      const int d = dest.getIdx(), a = s1.getIdx(), b = s2.getIdx();
+      switch (part_type) {
+        case INT8_TYPE:
+          if (saturate) {
+            if (is_unsigned) {
+              e.uqsub(VReg16B(d), VReg16B(a), VReg16B(b));
+            } else {
+              e.sqsub(VReg16B(d), VReg16B(a), VReg16B(b));
+            }
+          } else {
+            e.sub(VReg16B(d), VReg16B(a), VReg16B(b));
+          }
+          break;
+        case INT16_TYPE:
+          if (saturate) {
+            if (is_unsigned) {
+              e.uqsub(VReg8H(d), VReg8H(a), VReg8H(b));
+            } else {
+              e.sqsub(VReg8H(d), VReg8H(a), VReg8H(b));
+            }
+          } else {
+            e.sub(VReg8H(d), VReg8H(a), VReg8H(b));
+          }
+          break;
+        case INT32_TYPE:
+          if (saturate) {
+            if (is_unsigned) {
+              e.uqsub(VReg4S(d), VReg4S(a), VReg4S(b));
+            } else {
+              e.sqsub(VReg4S(d), VReg4S(a), VReg4S(b));
+            }
+          } else {
+            e.sub(VReg4S(d), VReg4S(a), VReg4S(b));
+          }
+          break;
+        case FLOAT32_TYPE:
+          e.fsub(VReg4S(d), VReg4S(a), VReg4S(b));
+          break;
+        default:
+          assert_unhandled_case(part_type);
+          break;
+      }
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_SUB, VECTOR_SUB);
+
+// ============================================================================
+// OPCODE_VECTOR_MAX
+// ============================================================================
+struct VECTOR_MAX
+    : Sequence<VECTOR_MAX, I<OPCODE_VECTOR_MAX, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [&i](A64Emitter& e, const QReg& dest, const QReg& s1,
+                             const QReg& s2) {
+      const uint32_t part_type = i.instr->flags >> 8;
+      const int d = dest.getIdx(), a = s1.getIdx(), b = s2.getIdx();
+      if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+        switch (part_type) {
+          case INT8_TYPE:
+            e.umax(VReg16B(d), VReg16B(a), VReg16B(b));
+            break;
+          case INT16_TYPE:
+            e.umax(VReg8H(d), VReg8H(a), VReg8H(b));
+            break;
+          case INT32_TYPE:
+            e.umax(VReg4S(d), VReg4S(a), VReg4S(b));
+            break;
+          default:
+            assert_unhandled_case(part_type);
+            break;
+        }
+      } else {
+        switch (part_type) {
+          case INT8_TYPE:
+            e.smax(VReg16B(d), VReg16B(a), VReg16B(b));
+            break;
+          case INT16_TYPE:
+            e.smax(VReg8H(d), VReg8H(a), VReg8H(b));
+            break;
+          case INT32_TYPE:
+            e.smax(VReg4S(d), VReg4S(a), VReg4S(b));
+            break;
+          default:
+            assert_unhandled_case(part_type);
+            break;
+        }
+      }
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_MAX, VECTOR_MAX);
+
+// ============================================================================
+// OPCODE_VECTOR_MIN
+// ============================================================================
+struct VECTOR_MIN
+    : Sequence<VECTOR_MIN, I<OPCODE_VECTOR_MIN, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [&i](A64Emitter& e, const QReg& dest, const QReg& s1,
+                             const QReg& s2) {
+      const uint32_t part_type = i.instr->flags >> 8;
+      const int d = dest.getIdx(), a = s1.getIdx(), b = s2.getIdx();
+      if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+        switch (part_type) {
+          case INT8_TYPE:
+            e.umin(VReg16B(d), VReg16B(a), VReg16B(b));
+            break;
+          case INT16_TYPE:
+            e.umin(VReg8H(d), VReg8H(a), VReg8H(b));
+            break;
+          case INT32_TYPE:
+            e.umin(VReg4S(d), VReg4S(a), VReg4S(b));
+            break;
+          default:
+            assert_unhandled_case(part_type);
+            break;
+        }
+      } else {
+        switch (part_type) {
+          case INT8_TYPE:
+            e.smin(VReg16B(d), VReg16B(a), VReg16B(b));
+            break;
+          case INT16_TYPE:
+            e.smin(VReg8H(d), VReg8H(a), VReg8H(b));
+            break;
+          case INT32_TYPE:
+            e.smin(VReg4S(d), VReg4S(a), VReg4S(b));
+            break;
+          default:
+            assert_unhandled_case(part_type);
+            break;
+        }
+      }
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_MIN, VECTOR_MIN);
+
+// ============================================================================
+// OPCODE_VECTOR_COMPARE_EQ
+// ============================================================================
+struct VECTOR_COMPARE_EQ_V128
+    : Sequence<VECTOR_COMPARE_EQ_V128,
+               I<OPCODE_VECTOR_COMPARE_EQ, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [&i](A64Emitter& e, const QReg& dest, const QReg& s1,
+                             const QReg& s2) {
+      const int d = dest.getIdx(), a = s1.getIdx(), b = s2.getIdx();
+      switch (i.instr->flags) {
+        case INT8_TYPE:
+          e.cmeq(VReg16B(d), VReg16B(a), VReg16B(b));
+          break;
+        case INT16_TYPE:
+          e.cmeq(VReg8H(d), VReg8H(a), VReg8H(b));
+          break;
+        case INT32_TYPE:
+          e.cmeq(VReg4S(d), VReg4S(a), VReg4S(b));
+          break;
+        case FLOAT32_TYPE:
+          e.fcmeq(VReg4S(d), VReg4S(a), VReg4S(b));
+          break;
+        default:
+          assert_unhandled_case(i.instr->flags);
+          break;
+      }
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_COMPARE_EQ, VECTOR_COMPARE_EQ_V128);
+
+// ============================================================================
+// OPCODE_VECTOR_COMPARE_SGT
+// ============================================================================
+struct VECTOR_COMPARE_SGT_V128
+    : Sequence<VECTOR_COMPARE_SGT_V128,
+               I<OPCODE_VECTOR_COMPARE_SGT, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [&i](A64Emitter& e, const QReg& dest, const QReg& s1,
+                             const QReg& s2) {
+      const int d = dest.getIdx(), a = s1.getIdx(), b = s2.getIdx();
+      switch (i.instr->flags) {
+        case INT8_TYPE:
+          e.cmgt(VReg16B(d), VReg16B(a), VReg16B(b));
+          break;
+        case INT16_TYPE:
+          e.cmgt(VReg8H(d), VReg8H(a), VReg8H(b));
+          break;
+        case INT32_TYPE:
+          e.cmgt(VReg4S(d), VReg4S(a), VReg4S(b));
+          break;
+        case FLOAT32_TYPE:
+          e.fcmgt(VReg4S(d), VReg4S(a), VReg4S(b));
+          break;
+        default:
+          assert_unhandled_case(i.instr->flags);
+          break;
+      }
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_COMPARE_SGT, VECTOR_COMPARE_SGT_V128);
+
+// ============================================================================
+// OPCODE_VECTOR_COMPARE_SGE
+// ============================================================================
+struct VECTOR_COMPARE_SGE_V128
+    : Sequence<VECTOR_COMPARE_SGE_V128,
+               I<OPCODE_VECTOR_COMPARE_SGE, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [&i](A64Emitter& e, const QReg& dest, const QReg& s1,
+                             const QReg& s2) {
+      const int d = dest.getIdx(), a = s1.getIdx(), b = s2.getIdx();
+      switch (i.instr->flags) {
+        case INT8_TYPE:
+          e.cmge(VReg16B(d), VReg16B(a), VReg16B(b));
+          break;
+        case INT16_TYPE:
+          e.cmge(VReg8H(d), VReg8H(a), VReg8H(b));
+          break;
+        case INT32_TYPE:
+          e.cmge(VReg4S(d), VReg4S(a), VReg4S(b));
+          break;
+        case FLOAT32_TYPE:
+          e.fcmge(VReg4S(d), VReg4S(a), VReg4S(b));
+          break;
+        default:
+          assert_unhandled_case(i.instr->flags);
+          break;
+      }
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_COMPARE_SGE, VECTOR_COMPARE_SGE_V128);
+
+// ============================================================================
+// OPCODE_VECTOR_COMPARE_UGT / OPCODE_VECTOR_COMPARE_UGE
+// ============================================================================
+// Integer forms are native (CMHI/CMHS). The float form mirrors x64: bias
+// both operands by the sign mask and do a signed compare.
+struct VECTOR_COMPARE_UGT_V128
+    : Sequence<VECTOR_COMPARE_UGT_V128,
+               I<OPCODE_VECTOR_COMPARE_UGT, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [&i](A64Emitter& e, const QReg& dest, const QReg& s1,
+                             const QReg& s2) {
+      const int d = dest.getIdx(), a = s1.getIdx(), b = s2.getIdx();
+      switch (i.instr->flags) {
+        case INT8_TYPE:
+          e.cmhi(VReg16B(d), VReg16B(a), VReg16B(b));
+          break;
+        case INT16_TYPE:
+          e.cmhi(VReg8H(d), VReg8H(a), VReg8H(b));
+          break;
+        case INT32_TYPE:
+          e.cmhi(VReg4S(d), VReg4S(a), VReg4S(b));
+          break;
+        case FLOAT32_TYPE:
+          e.LoadVConst(QReg(2), VSignMaskPS);
+          e.eor(VReg16B(0), VReg16B(a), VReg16B(2));
+          e.eor(VReg16B(1), VReg16B(b), VReg16B(2));
+          e.fcmgt(VReg4S(d), VReg4S(0), VReg4S(1));
+          break;
+        default:
+          assert_unhandled_case(i.instr->flags);
+          break;
+      }
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_COMPARE_UGT, VECTOR_COMPARE_UGT_V128);
+
+struct VECTOR_COMPARE_UGE_V128
+    : Sequence<VECTOR_COMPARE_UGE_V128,
+               I<OPCODE_VECTOR_COMPARE_UGE, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [&i](A64Emitter& e, const QReg& dest, const QReg& s1,
+                             const QReg& s2) {
+      const int d = dest.getIdx(), a = s1.getIdx(), b = s2.getIdx();
+      switch (i.instr->flags) {
+        case INT8_TYPE:
+          e.cmhs(VReg16B(d), VReg16B(a), VReg16B(b));
+          break;
+        case INT16_TYPE:
+          e.cmhs(VReg8H(d), VReg8H(a), VReg8H(b));
+          break;
+        case INT32_TYPE:
+          e.cmhs(VReg4S(d), VReg4S(a), VReg4S(b));
+          break;
+        case FLOAT32_TYPE:
+          e.LoadVConst(QReg(2), VSignMaskPS);
+          e.eor(VReg16B(0), VReg16B(a), VReg16B(2));
+          e.eor(VReg16B(1), VReg16B(b), VReg16B(2));
+          e.fcmge(VReg4S(d), VReg4S(0), VReg4S(1));
+          break;
+        default:
+          assert_unhandled_case(i.instr->flags);
+          break;
+      }
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_COMPARE_UGE, VECTOR_COMPARE_UGE_V128);
+
+// ============================================================================
+// OPCODE_VECTOR_AVERAGE
+// ============================================================================
+// Rounding average (a+b+1)>>1; NEON has it natively for all widths and both
+// signednesses (URHADD/SRHADD), including the I32 cases x64 emulates.
+struct VECTOR_AVERAGE
+    : Sequence<VECTOR_AVERAGE,
+               I<OPCODE_VECTOR_AVERAGE, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [&i](A64Emitter& e, const QReg& dest, const QReg& s1,
+                             const QReg& s2) {
+      const TypeName part_type = static_cast<TypeName>(i.instr->flags & 0xFF);
+      const uint32_t arithmetic_flags = i.instr->flags >> 8;
+      const bool is_unsigned = !!(arithmetic_flags & ARITHMETIC_UNSIGNED);
+      const int d = dest.getIdx(), a = s1.getIdx(), b = s2.getIdx();
+      switch (part_type) {
+        case INT8_TYPE:
+          if (is_unsigned) {
+            e.urhadd(VReg16B(d), VReg16B(a), VReg16B(b));
+          } else {
+            e.srhadd(VReg16B(d), VReg16B(a), VReg16B(b));
+          }
+          break;
+        case INT16_TYPE:
+          if (is_unsigned) {
+            e.urhadd(VReg8H(d), VReg8H(a), VReg8H(b));
+          } else {
+            e.srhadd(VReg8H(d), VReg8H(a), VReg8H(b));
+          }
+          break;
+        case INT32_TYPE:
+          if (is_unsigned) {
+            e.urhadd(VReg4S(d), VReg4S(a), VReg4S(b));
+          } else {
+            e.srhadd(VReg4S(d), VReg4S(a), VReg4S(b));
+          }
+          break;
+        default:
+          assert_unhandled_case(part_type);
+          break;
+      }
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_AVERAGE, VECTOR_AVERAGE);
+
+// ============================================================================
+// V128 variants of scalar opcodes (all lanes f32 unless noted)
+// ============================================================================
+struct AND_NOT_V128
+    : Sequence<AND_NOT_V128, I<OPCODE_AND_NOT, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    // dest = src1 & ~src2
+    EmitBinaryVOp(e, i, [](A64Emitter& e, const QReg& dest, const QReg& s1,
+                           const QReg& s2) {
+      e.bic(VReg16B(dest.getIdx()), VReg16B(s1.getIdx()),
+            VReg16B(s2.getIdx()));
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_AND_NOT, AND_NOT_V128);
+
+struct NEG_V128 : Sequence<NEG_V128, I<OPCODE_NEG, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    assert_true(!i.instr->flags);
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    e.fneg(VReg4S(i.dest.reg().getIdx()), VReg4S(src1.getIdx()));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_NEG, NEG_V128);
+
+struct ABS_V128 : Sequence<ABS_V128, I<OPCODE_ABS, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    e.fabs(VReg4S(i.dest.reg().getIdx()), VReg4S(src1.getIdx()));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_ABS, ABS_V128);
+
+struct SQRT_V128 : Sequence<SQRT_V128, I<OPCODE_SQRT, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    e.fsqrt(VReg4S(i.dest.reg().getIdx()), VReg4S(src1.getIdx()));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_SQRT, SQRT_V128);
+
+// Exact 1/sqrt(x) and 1/x, same policy as the scalar sequences (Stage 4.5):
+// host estimate accuracy can't be pinned to the PPC estimate instructions.
+struct RSQRT_V128 : Sequence<RSQRT_V128, I<OPCODE_RSQRT, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    e.fsqrt(VReg4S(0), VReg4S(src1.getIdx()));
+    e.LoadVConst(QReg(1), VOnePS);
+    e.fdiv(VReg4S(i.dest.reg().getIdx()), VReg4S(1), VReg4S(0));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_RSQRT, RSQRT_V128);
+
+struct RECIP_V128 : Sequence<RECIP_V128, I<OPCODE_RECIP, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    e.LoadVConst(QReg(1), VOnePS);
+    e.fdiv(VReg4S(i.dest.reg().getIdx()), VReg4S(1), VReg4S(src1.getIdx()));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_RECIP, RECIP_V128);
+
+struct ROUND_V128 : Sequence<ROUND_V128, I<OPCODE_ROUND, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    const VReg4S dest_s(i.dest.reg().getIdx());
+    const VReg4S src_s(src1.getIdx());
+    switch (i.instr->flags) {
+      case ROUND_TO_ZERO:
+        e.frintz(dest_s, src_s);
+        break;
+      case ROUND_TO_NEAREST:
+        e.frintn(dest_s, src_s);
+        break;
+      case ROUND_TO_MINUS_INFINITY:
+        e.frintm(dest_s, src_s);
+        break;
+      case ROUND_TO_POSITIVE_INFINITY:
+        e.frintp(dest_s, src_s);
+        break;
+      default:
+        assert_unhandled_case(i.instr->flags);
+        break;
+    }
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_ROUND, ROUND_V128);
+
+// x64 maxps/minps semantics: src2 wins on equal or either-NaN (same policy
+// as the scalar MIN/MAX sequences).
+struct MAX_V128 : Sequence<MAX_V128, I<OPCODE_MAX, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [](A64Emitter& e, const QReg& dest, const QReg& s1,
+                           const QReg& s2) {
+      e.fcmgt(VReg4S(2), VReg4S(s1.getIdx()), VReg4S(s2.getIdx()));
+      e.bsl(VReg16B(2), VReg16B(s1.getIdx()), VReg16B(s2.getIdx()));
+      const VReg16B dest_b(dest.getIdx());
+      e.orr(dest_b, VReg16B(2), VReg16B(2));
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_MAX, MAX_V128);
+
+struct MIN_V128 : Sequence<MIN_V128, I<OPCODE_MIN, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryVOp(e, i, [](A64Emitter& e, const QReg& dest, const QReg& s1,
+                           const QReg& s2) {
+      e.fcmgt(VReg4S(2), VReg4S(s2.getIdx()), VReg4S(s1.getIdx()));
+      e.bsl(VReg16B(2), VReg16B(s1.getIdx()), VReg16B(s2.getIdx()));
+      const VReg16B dest_b(dest.getIdx());
+      e.orr(dest_b, VReg16B(2), VReg16B(2));
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_MIN, MIN_V128);
+
+struct MUL_V128 : Sequence<MUL_V128, I<OPCODE_MUL, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    assert_true(!i.instr->flags);
+    EmitBinaryVOp(e, i, [](A64Emitter& e, const QReg& dest, const QReg& s1,
+                           const QReg& s2) {
+      e.fmul(VReg4S(dest.getIdx()), VReg4S(s1.getIdx()), VReg4S(s2.getIdx()));
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_MUL, MUL_V128);
+
+struct DIV_V128 : Sequence<DIV_V128, I<OPCODE_DIV, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    assert_true(!i.instr->flags);
+    EmitBinaryVOp(e, i, [](A64Emitter& e, const QReg& dest, const QReg& s1,
+                           const QReg& s2) {
+      e.fdiv(VReg4S(dest.getIdx()), VReg4S(s1.getIdx()), VReg4S(s2.getIdx()));
+    });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_DIV, DIV_V128);
+
+// Unfused mul+add/sub, mirroring x64 (its FMA path is disabled because the
+// test expectations were produced unfused; the scalar F32/F64 sequences are
+// fused like PPC fmadd, but VMX tests expect the unfused results).
+struct MUL_ADD_V128
+    : Sequence<MUL_ADD_V128,
+               I<OPCODE_MUL_ADD, V128Op, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    const QReg src2 = GetVWithConst(e, i.src2, QReg(1));
+    const QReg src3 = GetVWithConst(e, i.src3, QReg(2));
+    e.fmul(VReg4S(0), VReg4S(src1.getIdx()), VReg4S(src2.getIdx()));
+    e.fadd(VReg4S(i.dest.reg().getIdx()), VReg4S(0), VReg4S(src3.getIdx()));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_MUL_ADD, MUL_ADD_V128);
+
+struct MUL_SUB_V128
+    : Sequence<MUL_SUB_V128,
+               I<OPCODE_MUL_SUB, V128Op, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    const QReg src2 = GetVWithConst(e, i.src2, QReg(1));
+    const QReg src3 = GetVWithConst(e, i.src3, QReg(2));
+    e.fmul(VReg4S(0), VReg4S(src1.getIdx()), VReg4S(src2.getIdx()));
+    e.fsub(VReg4S(i.dest.reg().getIdx()), VReg4S(0), VReg4S(src3.getIdx()));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_MUL_SUB, MUL_SUB_V128);
+
+// dest = (src1 & src3) | (~src1 & src2) — set bits of the src1 mask take
+// src3 (matches x64; vsel semantics).
+struct SELECT_V128_I8
+    : Sequence<SELECT_V128_I8, I<OPCODE_SELECT, V128Op, I8Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    // dest = src1 != 0 ? src2 : src3
+    e.and_(WReg(0), i.src1, 0xFF);
+    e.dup(VReg4S(0), WReg(0));
+    e.cmeq(VReg4S(0), VReg4S(0), 0);  // all-ones where src1 == 0
+    const QReg src2 = GetVWithConst(e, i.src2, QReg(1));
+    const QReg src3 = GetVWithConst(e, i.src3, QReg(2));
+    e.bsl(VReg16B(0), VReg16B(src3.getIdx()), VReg16B(src2.getIdx()));
+    const VReg16B dest_b(i.dest.reg().getIdx());
+    e.orr(dest_b, VReg16B(0), VReg16B(0));
+  }
+};
+struct SELECT_V128_V128
+    : Sequence<SELECT_V128_V128,
+               I<OPCODE_SELECT, V128Op, V128Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    const QReg src2 = GetVWithConst(e, i.src2, QReg(1));
+    const QReg src3 = GetVWithConst(e, i.src3, QReg(2));
+    // Copy the mask so BSL (which consumes it in place) can't clobber a
+    // pool register.
+    e.orr(VReg16B(3), VReg16B(src1.getIdx()), VReg16B(src1.getIdx()));
+    e.bsl(VReg16B(3), VReg16B(src3.getIdx()), VReg16B(src2.getIdx()));
+    const VReg16B dest_b(i.dest.reg().getIdx());
+    e.orr(dest_b, VReg16B(3), VReg16B(3));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_SELECT, SELECT_V128_I8, SELECT_V128_V128);
+
+struct IS_TRUE_V128 : Sequence<IS_TRUE_V128, I<OPCODE_IS_TRUE, I8Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    e.umaxv(BReg(0), VReg16B(src1.getIdx()));
+    e.umov(WReg(0), VReg16B(0)[0]);
+    e.cmp(WReg(0), 0);
+    e.cset(i.dest, Cond::NE);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_IS_TRUE, IS_TRUE_V128);
+
+struct IS_FALSE_V128
+    : Sequence<IS_FALSE_V128, I<OPCODE_IS_FALSE, I8Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    e.umaxv(BReg(0), VReg16B(src1.getIdx()));
+    e.umov(WReg(0), VReg16B(0)[0]);
+    e.cmp(WReg(0), 0);
+    e.cset(i.dest, Cond::EQ);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_IS_FALSE, IS_FALSE_V128);
+
+// Per-lane exp2/log2 through host helpers (same as x64 and the scalar
+// sequences).
+struct POW2_V128 : Sequence<POW2_V128, I<OPCODE_POW2, V128Op, V128Op>> {
+  static void EmulatePow2(void*, vec128_t* v) {
+    for (int k = 0; k < 4; ++k) {
+      v->f32[k] = std::exp2(v->f32[k]);
+    }
+  }
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    StashVForCall(e, src1);
+    e.CallNativeSafe(reinterpret_cast<void*>(EmulatePow2));
+    e.ldr(i.dest, ptr(e.sp, kVStashOffset));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_POW2, POW2_V128);
+
+struct LOG2_V128 : Sequence<LOG2_V128, I<OPCODE_LOG2, V128Op, V128Op>> {
+  static void EmulateLog2(void*, vec128_t* v) {
+    for (int k = 0; k < 4; ++k) {
+      v->f32[k] = std::log2(v->f32[k]);
+    }
+  }
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    StashVForCall(e, src1);
+    e.CallNativeSafe(reinterpret_cast<void*>(EmulateLog2));
+    e.ldr(i.dest, ptr(e.sp, kVStashOffset));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_LOG2, LOG2_V128);
 
 // ============================================================================
 // OPCODE_DID_SATURATE

@@ -210,6 +210,10 @@ bool A64Emitter::Emit(HIRBuilder* builder, EmitFunctionInfo& func_info) {
         // No sequence found!
         // NOTE: If you encounter this after adding a new instruction, do a
         // full rebuild!
+        // stderr directly: the async logger loses this line when the assert
+        // below aborts the process.
+        fprintf(stderr, "Unable to process HIR opcode %s\n",
+                instr->opcode->name);
         XELOGE("Unable to process HIR opcode {}", instr->opcode->name);
         assert_always();
         break;

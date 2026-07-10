@@ -939,9 +939,407 @@ EMIT_COMPARE_SEQUENCES(UGE, Cond::HS, false)
 
 #undef EMIT_COMPARE_SEQUENCES
 
+// ============================================================================
+// OPCODE_ADD_CARRY
+// ============================================================================
+// dest = src1 + src2 + (src3 & 1). Only bit 0 of the carry-in is meaningful
+// (matching x64's sahf); carry-out is computed by separate HIR compares in
+// ppc_emit_alu.cc, so only the sum is produced here.
+template <typename SEQ, typename REG, typename ARGS>
+void EmitAddCarry(A64Emitter& e, const ARGS& i) {
+  auto src1 = SEQ::GetWithConst(e, i.src1, GetTempReg1<REG>(e));
+  auto src2 = SEQ::GetWithConst(e, i.src2, GetTempReg2<REG>(e));
+  if (i.src3.is_constant) {
+    e.add(i.dest, src1, src2);
+    if (i.src3.constant() & 1) {
+      e.add(i.dest, i.dest, 1);
+    }
+  } else {
+    e.and_(WReg(17), i.src3.reg(), 1);
+    e.add(i.dest, src1, src2);
+    e.add(i.dest, i.dest, REG(17));
+  }
+}
+struct ADD_CARRY_I8
+    : Sequence<ADD_CARRY_I8, I<OPCODE_ADD_CARRY, I8Op, I8Op, I8Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitAddCarry<ADD_CARRY_I8, WReg>(e, i);
+  }
+};
+struct ADD_CARRY_I16
+    : Sequence<ADD_CARRY_I16, I<OPCODE_ADD_CARRY, I16Op, I16Op, I16Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitAddCarry<ADD_CARRY_I16, WReg>(e, i);
+  }
+};
+struct ADD_CARRY_I32
+    : Sequence<ADD_CARRY_I32, I<OPCODE_ADD_CARRY, I32Op, I32Op, I32Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitAddCarry<ADD_CARRY_I32, WReg>(e, i);
+  }
+};
+struct ADD_CARRY_I64
+    : Sequence<ADD_CARRY_I64, I<OPCODE_ADD_CARRY, I64Op, I64Op, I64Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitAddCarry<ADD_CARRY_I64, XReg>(e, i);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_ADD_CARRY, ADD_CARRY_I8, ADD_CARRY_I16,
+                     ADD_CARRY_I32, ADD_CARRY_I64);
+
+// ============================================================================
+// OPCODE_MUL
+// ============================================================================
+// Low half of the product: independent of operand signedness and of garbage
+// above sub-word widths, so a plain mul works for every integer type.
+struct MUL_I8 : Sequence<MUL_I8, I<OPCODE_MUL, I8Op, I8Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryOp(e, i, [](A64Emitter& e, const WReg& dest, const WReg& src1,
+                          const WReg& src2) { e.mul(dest, src1, src2); });
+  }
+};
+struct MUL_I16 : Sequence<MUL_I16, I<OPCODE_MUL, I16Op, I16Op, I16Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryOp(e, i, [](A64Emitter& e, const WReg& dest, const WReg& src1,
+                          const WReg& src2) { e.mul(dest, src1, src2); });
+  }
+};
+struct MUL_I32 : Sequence<MUL_I32, I<OPCODE_MUL, I32Op, I32Op, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryOp(e, i, [](A64Emitter& e, const WReg& dest, const WReg& src1,
+                          const WReg& src2) { e.mul(dest, src1, src2); });
+  }
+};
+struct MUL_I64 : Sequence<MUL_I64, I<OPCODE_MUL, I64Op, I64Op, I64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryOp(e, i, [](A64Emitter& e, const XReg& dest, const XReg& src1,
+                          const XReg& src2) { e.mul(dest, src1, src2); });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_MUL, MUL_I8, MUL_I16, MUL_I32, MUL_I64);
+
+// ============================================================================
+// OPCODE_MUL_HI
+// ============================================================================
+struct MUL_HI_I8 : Sequence<MUL_HI_I8, I<OPCODE_MUL_HI, I8Op, I8Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    auto src2 = GetWithConst(e, i.src2, WReg(1));
+    if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+      e.uxtb(WReg(0), src1);
+      e.uxtb(WReg(1), src2);
+    } else {
+      e.sxtb(WReg(0), src1);
+      e.sxtb(WReg(1), src2);
+    }
+    e.mul(WReg(0), WReg(0), WReg(1));
+    e.lsr(i.dest, WReg(0), 8);
+  }
+};
+struct MUL_HI_I16
+    : Sequence<MUL_HI_I16, I<OPCODE_MUL_HI, I16Op, I16Op, I16Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    auto src2 = GetWithConst(e, i.src2, WReg(1));
+    if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+      e.uxth(WReg(0), src1);
+      e.uxth(WReg(1), src2);
+    } else {
+      e.sxth(WReg(0), src1);
+      e.sxth(WReg(1), src2);
+    }
+    e.mul(WReg(0), WReg(0), WReg(1));
+    e.lsr(i.dest, WReg(0), 16);
+  }
+};
+struct MUL_HI_I32
+    : Sequence<MUL_HI_I32, I<OPCODE_MUL_HI, I32Op, I32Op, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    auto src2 = GetWithConst(e, i.src2, WReg(1));
+    const XReg dest_x(i.dest.reg().getIdx());
+    if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+      e.umull(dest_x, src1, src2);
+    } else {
+      e.smull(dest_x, src1, src2);
+    }
+    e.lsr(dest_x, dest_x, 32);
+  }
+};
+struct MUL_HI_I64
+    : Sequence<MUL_HI_I64, I<OPCODE_MUL_HI, I64Op, I64Op, I64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, XReg(0));
+    auto src2 = GetWithConst(e, i.src2, XReg(1));
+    if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+      e.umulh(i.dest, src1, src2);
+    } else {
+      e.smulh(i.dest, src1, src2);
+    }
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_MUL_HI, MUL_HI_I8, MUL_HI_I16, MUL_HI_I32,
+                     MUL_HI_I64);
+
+// ============================================================================
+// OPCODE_DIV
+// ============================================================================
+// PPC leaves divide-by-zero results undefined; sdiv/udiv naturally produce 0
+// without trapping, so no zero guard is needed (x64 branches around idiv).
+struct DIV_I8 : Sequence<DIV_I8, I<OPCODE_DIV, I8Op, I8Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    auto src2 = GetWithConst(e, i.src2, WReg(1));
+    if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+      e.uxtb(WReg(0), src1);
+      e.uxtb(WReg(1), src2);
+      e.udiv(i.dest, WReg(0), WReg(1));
+    } else {
+      e.sxtb(WReg(0), src1);
+      e.sxtb(WReg(1), src2);
+      e.sdiv(i.dest, WReg(0), WReg(1));
+    }
+  }
+};
+struct DIV_I16 : Sequence<DIV_I16, I<OPCODE_DIV, I16Op, I16Op, I16Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    auto src2 = GetWithConst(e, i.src2, WReg(1));
+    if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+      e.uxth(WReg(0), src1);
+      e.uxth(WReg(1), src2);
+      e.udiv(i.dest, WReg(0), WReg(1));
+    } else {
+      e.sxth(WReg(0), src1);
+      e.sxth(WReg(1), src2);
+      e.sdiv(i.dest, WReg(0), WReg(1));
+    }
+  }
+};
+struct DIV_I32 : Sequence<DIV_I32, I<OPCODE_DIV, I32Op, I32Op, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    auto src2 = GetWithConst(e, i.src2, WReg(1));
+    if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+      e.udiv(i.dest, src1, src2);
+    } else {
+      e.sdiv(i.dest, src1, src2);
+    }
+  }
+};
+struct DIV_I64 : Sequence<DIV_I64, I<OPCODE_DIV, I64Op, I64Op, I64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, XReg(0));
+    auto src2 = GetWithConst(e, i.src2, XReg(1));
+    if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+      e.udiv(i.dest, src1, src2);
+    } else {
+      e.sdiv(i.dest, src1, src2);
+    }
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_DIV, DIV_I8, DIV_I16, DIV_I32, DIV_I64);
+
+// ============================================================================
+// OPCODE_AND_NOT
+// ============================================================================
+// dest = src1 & ~src2
+struct AND_NOT_I8 : Sequence<AND_NOT_I8, I<OPCODE_AND_NOT, I8Op, I8Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryOp(e, i, [](A64Emitter& e, const WReg& dest, const WReg& src1,
+                          const WReg& src2) { e.bic(dest, src1, src2); });
+  }
+};
+struct AND_NOT_I16
+    : Sequence<AND_NOT_I16, I<OPCODE_AND_NOT, I16Op, I16Op, I16Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryOp(e, i, [](A64Emitter& e, const WReg& dest, const WReg& src1,
+                          const WReg& src2) { e.bic(dest, src1, src2); });
+  }
+};
+struct AND_NOT_I32
+    : Sequence<AND_NOT_I32, I<OPCODE_AND_NOT, I32Op, I32Op, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryOp(e, i, [](A64Emitter& e, const WReg& dest, const WReg& src1,
+                          const WReg& src2) { e.bic(dest, src1, src2); });
+  }
+};
+struct AND_NOT_I64
+    : Sequence<AND_NOT_I64, I<OPCODE_AND_NOT, I64Op, I64Op, I64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitBinaryOp(e, i, [](A64Emitter& e, const XReg& dest, const XReg& src1,
+                          const XReg& src2) { e.bic(dest, src1, src2); });
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_AND_NOT, AND_NOT_I8, AND_NOT_I16, AND_NOT_I32,
+                     AND_NOT_I64);
+
+// ============================================================================
+// OPCODE_CNTLZ
+// ============================================================================
+// dest (i8) = count of leading zeros at the source's width.
+struct CNTLZ_I8 : Sequence<CNTLZ_I8, I<OPCODE_CNTLZ, I8Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    e.and_(WReg(0), src1, 0xFF);
+    e.clz(WReg(0), WReg(0));
+    e.sub(i.dest, WReg(0), 24);
+  }
+};
+struct CNTLZ_I16 : Sequence<CNTLZ_I16, I<OPCODE_CNTLZ, I8Op, I16Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    e.uxth(WReg(0), src1);
+    e.clz(WReg(0), WReg(0));
+    e.sub(i.dest, WReg(0), 16);
+  }
+};
+struct CNTLZ_I32 : Sequence<CNTLZ_I32, I<OPCODE_CNTLZ, I8Op, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    e.clz(i.dest, src1);
+  }
+};
+struct CNTLZ_I64 : Sequence<CNTLZ_I64, I<OPCODE_CNTLZ, I8Op, I64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, XReg(0));
+    const XReg dest_x(i.dest.reg().getIdx());
+    e.clz(dest_x, src1);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_CNTLZ, CNTLZ_I8, CNTLZ_I16, CNTLZ_I32, CNTLZ_I64);
+
+// ============================================================================
+// OPCODE_IS_TRUE / OPCODE_IS_FALSE
+// ============================================================================
+// dest (i8) = (src != 0) / (src == 0), testing only the source's width.
+#define EMIT_IS_SEQUENCES(OP, COND)                                            \
+  struct IS_##OP##_I8 : Sequence<IS_##OP##_I8, I<OPCODE_IS_##OP, I8Op, I8Op>> { \
+    static void Emit(A64Emitter& e, const EmitArgType& i) {                    \
+      auto src1 = GetWithConst(e, i.src1, WReg(0));                            \
+      e.tst(src1, 0xFF);                                                       \
+      e.cset(i.dest, COND);                                                    \
+    }                                                                          \
+  };                                                                           \
+  struct IS_##OP##_I16                                                         \
+      : Sequence<IS_##OP##_I16, I<OPCODE_IS_##OP, I8Op, I16Op>> {              \
+    static void Emit(A64Emitter& e, const EmitArgType& i) {                    \
+      auto src1 = GetWithConst(e, i.src1, WReg(0));                            \
+      e.tst(src1, 0xFFFF);                                                     \
+      e.cset(i.dest, COND);                                                    \
+    }                                                                          \
+  };                                                                           \
+  struct IS_##OP##_I32                                                         \
+      : Sequence<IS_##OP##_I32, I<OPCODE_IS_##OP, I8Op, I32Op>> {              \
+    static void Emit(A64Emitter& e, const EmitArgType& i) {                    \
+      auto src1 = GetWithConst(e, i.src1, WReg(0));                            \
+      e.cmp(src1, 0);                                                          \
+      e.cset(i.dest, COND);                                                    \
+    }                                                                          \
+  };                                                                           \
+  struct IS_##OP##_I64                                                         \
+      : Sequence<IS_##OP##_I64, I<OPCODE_IS_##OP, I8Op, I64Op>> {              \
+    static void Emit(A64Emitter& e, const EmitArgType& i) {                    \
+      auto src1 = GetWithConst(e, i.src1, XReg(0));                            \
+      e.cmp(src1, 0);                                                          \
+      e.cset(i.dest, COND);                                                    \
+    }                                                                          \
+  };                                                                           \
+  EMITTER_OPCODE_TABLE(OPCODE_IS_##OP, IS_##OP##_I8, IS_##OP##_I16,            \
+                       IS_##OP##_I32, IS_##OP##_I64);
+
+EMIT_IS_SEQUENCES(TRUE, Cond::NE)
+EMIT_IS_SEQUENCES(FALSE, Cond::EQ)
+
+#undef EMIT_IS_SEQUENCES
+
+// ============================================================================
+// OPCODE_MIN
+// ============================================================================
+// Integer min is always a signed compare (see x64's cmovg usage).
+struct MIN_I8 : Sequence<MIN_I8, I<OPCODE_MIN, I8Op, I8Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    auto src2 = GetWithConst(e, i.src2, WReg(1));
+    e.sxtb(WReg(0), src1);
+    e.sxtb(WReg(1), src2);
+    e.cmp(WReg(0), WReg(1));
+    e.csel(i.dest, WReg(0), WReg(1), Cond::LT);
+  }
+};
+struct MIN_I16 : Sequence<MIN_I16, I<OPCODE_MIN, I16Op, I16Op, I16Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    auto src2 = GetWithConst(e, i.src2, WReg(1));
+    e.sxth(WReg(0), src1);
+    e.sxth(WReg(1), src2);
+    e.cmp(WReg(0), WReg(1));
+    e.csel(i.dest, WReg(0), WReg(1), Cond::LT);
+  }
+};
+struct MIN_I32 : Sequence<MIN_I32, I<OPCODE_MIN, I32Op, I32Op, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    auto src2 = GetWithConst(e, i.src2, WReg(1));
+    e.cmp(src1, src2);
+    e.csel(i.dest, src1, src2, Cond::LT);
+  }
+};
+struct MIN_I64 : Sequence<MIN_I64, I<OPCODE_MIN, I64Op, I64Op, I64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, XReg(0));
+    auto src2 = GetWithConst(e, i.src2, XReg(1));
+    e.cmp(src1, src2);
+    e.csel(i.dest, src1, src2, Cond::LT);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_MIN, MIN_I8, MIN_I16, MIN_I32, MIN_I64);
+
+// ============================================================================
+// OPCODE_SELECT
+// ============================================================================
+// dest = cond ? src2 : src3; cond is an i8 tested at its width.
+template <typename SEQ, typename REG, typename ARGS>
+void EmitSelect(A64Emitter& e, const ARGS& i) {
+  assert_true(!i.src1.is_constant);
+  auto src2 = SEQ::GetWithConst(e, i.src2, GetTempReg1<REG>(e));
+  auto src3 = SEQ::GetWithConst(e, i.src3, GetTempReg2<REG>(e));
+  e.tst(i.src1.reg(), 0xFF);
+  e.csel(i.dest, src2, src3, Cond::NE);
+}
+struct SELECT_I8
+    : Sequence<SELECT_I8, I<OPCODE_SELECT, I8Op, I8Op, I8Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitSelect<SELECT_I8, WReg>(e, i);
+  }
+};
+struct SELECT_I16
+    : Sequence<SELECT_I16, I<OPCODE_SELECT, I16Op, I8Op, I16Op, I16Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitSelect<SELECT_I16, WReg>(e, i);
+  }
+};
+struct SELECT_I32
+    : Sequence<SELECT_I32, I<OPCODE_SELECT, I32Op, I8Op, I32Op, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitSelect<SELECT_I32, WReg>(e, i);
+  }
+};
+struct SELECT_I64
+    : Sequence<SELECT_I64, I<OPCODE_SELECT, I64Op, I8Op, I64Op, I64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitSelect<SELECT_I64, XReg>(e, i);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_SELECT, SELECT_I8, SELECT_I16, SELECT_I32,
+                     SELECT_I64);
+
 // Include anchors to other sequence sources so they get included in the build.
 extern volatile int anchor_control;
 static int anchor_control_dest = anchor_control;
+
+extern volatile int anchor_memory;
+static int anchor_memory_dest = anchor_memory;
 
 bool SelectSequence(A64Emitter* e, const Instr* i, const Instr** new_tail) {
   const InstrKey key(i);

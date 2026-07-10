@@ -940,6 +940,43 @@ EMIT_COMPARE_SEQUENCES(UGE, Cond::HS, false)
 #undef EMIT_COMPARE_SEQUENCES
 
 // ============================================================================
+// OPCODE_BYTE_SWAP
+// ============================================================================
+struct BYTE_SWAP_I16
+    : Sequence<BYTE_SWAP_I16, I<OPCODE_BYTE_SWAP, I16Op, I16Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitUnaryOp(e, i, [](A64Emitter& e, const WReg& dest,
+                         const WReg& src1) { e.rev16(dest, src1); });
+  }
+};
+struct BYTE_SWAP_I32
+    : Sequence<BYTE_SWAP_I32, I<OPCODE_BYTE_SWAP, I32Op, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitUnaryOp(e, i, [](A64Emitter& e, const WReg& dest,
+                         const WReg& src1) { e.rev(dest, src1); });
+  }
+};
+struct BYTE_SWAP_I64
+    : Sequence<BYTE_SWAP_I64, I<OPCODE_BYTE_SWAP, I64Op, I64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    EmitUnaryOp(e, i, [](A64Emitter& e, const XReg& dest,
+                         const XReg& src1) { e.rev(dest, src1); });
+  }
+};
+struct BYTE_SWAP_V128
+    : Sequence<BYTE_SWAP_V128, I<OPCODE_BYTE_SWAP, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    assert_true(!i.src1.is_constant);
+    // Swap bytes within each 32-bit element (x64's XMMByteSwapMask).
+    const VReg16B dest_b(i.dest.reg().getIdx());
+    const VReg16B src_b(i.src1.reg().getIdx());
+    e.rev32(dest_b, src_b);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_BYTE_SWAP, BYTE_SWAP_I16, BYTE_SWAP_I32,
+                     BYTE_SWAP_I64, BYTE_SWAP_V128);
+
+// ============================================================================
 // OPCODE_ADD_CARRY
 // ============================================================================
 // dest = src1 + src2 + (src3 & 1). Only bit 0 of the carry-in is meaningful

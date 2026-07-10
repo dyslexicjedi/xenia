@@ -216,6 +216,163 @@ struct SWIZZLE
 EMITTER_OPCODE_TABLE(OPCODE_SWIZZLE, SWIZZLE);
 
 // ============================================================================
+// OPCODE_INSERT
+// ============================================================================
+// dest = src1 with the lane at (flipped) constant index src2 replaced by
+// src3. INS writes in place, so src1 is copied into dest first.
+namespace {
+
+void CopyToDest(A64Emitter& e, const V128Op& dest, const V128Op& src) {
+  if (src.is_constant) {
+    e.LoadConstantV(dest.reg(), src.constant());
+  } else if (dest.reg().getIdx() != src.reg().getIdx()) {
+    const VReg16B dest_b(dest.reg().getIdx());
+    const VReg16B src_b(src.reg().getIdx());
+    e.orr(dest_b, src_b, src_b);
+  }
+}
+
+}  // namespace
+
+struct INSERT_I8
+    : Sequence<INSERT_I8, I<OPCODE_INSERT, V128Op, V128Op, I8Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    assert_true(i.src2.is_constant);
+    CopyToDest(e, i.dest, i.src1);
+    // After CopyToDest: LoadConstantV clobbers x0/x1.
+    const WReg src3 = GetWithConst(e, i.src3, WReg(0));
+    e.ins(VReg16B(i.dest.reg().getIdx())[VEC128_B(i.src2.constant() & 0xF)],
+          src3);
+  }
+};
+struct INSERT_I16
+    : Sequence<INSERT_I16, I<OPCODE_INSERT, V128Op, V128Op, I8Op, I16Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    assert_true(i.src2.is_constant);
+    CopyToDest(e, i.dest, i.src1);
+    // After CopyToDest: LoadConstantV clobbers x0/x1.
+    const WReg src3 = GetWithConst(e, i.src3, WReg(0));
+    e.ins(VReg8H(i.dest.reg().getIdx())[VEC128_W(i.src2.constant() & 0x7)],
+          src3);
+  }
+};
+struct INSERT_I32
+    : Sequence<INSERT_I32, I<OPCODE_INSERT, V128Op, V128Op, I8Op, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    assert_true(i.src2.is_constant);
+    CopyToDest(e, i.dest, i.src1);
+    // After CopyToDest: LoadConstantV clobbers x0/x1.
+    const WReg src3 = GetWithConst(e, i.src3, WReg(0));
+    e.ins(VReg4S(i.dest.reg().getIdx())[i.src2.constant() & 0x3], src3);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_INSERT, INSERT_I8, INSERT_I16, INSERT_I32);
+
+// ============================================================================
+// OPCODE_EXTRACT
+// ============================================================================
+// Constant lane indices extract directly with UMOV; dynamic indices go
+// through the guest-frame stash (like x64's shuffle trick, the index is
+// masked to the vector, matching pshufb's low-4-bit behavior).
+struct EXTRACT_I8
+    : Sequence<EXTRACT_I8, I<OPCODE_EXTRACT, I8Op, V128Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    if (i.src2.is_constant) {
+      e.umov(i.dest, VReg16B(src1.getIdx())[VEC128_B(i.src2.constant() & 0xF)]);
+    } else {
+      e.str(src1, ptr(e.sp, kVStashOffset));
+      e.eor(WReg(1), i.src2, 0x3);
+      e.and_(WReg(1), WReg(1), 0xF);
+      e.add(XReg(0), e.sp, kVStashOffset);
+      e.ldrb(i.dest, ptr(XReg(0), XReg(1)));
+    }
+  }
+};
+struct EXTRACT_I16
+    : Sequence<EXTRACT_I16, I<OPCODE_EXTRACT, I16Op, V128Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    if (i.src2.is_constant) {
+      e.umov(i.dest, VReg8H(src1.getIdx())[VEC128_W(i.src2.constant() & 0x7)]);
+    } else {
+      e.str(src1, ptr(e.sp, kVStashOffset));
+      e.eor(WReg(1), i.src2, 0x1);
+      e.and_(WReg(1), WReg(1), 0x7);
+      e.lsl(WReg(1), WReg(1), 1);
+      e.add(XReg(0), e.sp, kVStashOffset);
+      e.ldrh(i.dest, ptr(XReg(0), XReg(1)));
+    }
+  }
+};
+struct EXTRACT_I32
+    : Sequence<EXTRACT_I32, I<OPCODE_EXTRACT, I32Op, V128Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    if (i.src2.is_constant) {
+      e.umov(i.dest, VReg4S(src1.getIdx())[i.src2.constant() & 0x3]);
+    } else {
+      e.str(src1, ptr(e.sp, kVStashOffset));
+      e.and_(WReg(1), i.src2, 0x3);
+      e.lsl(WReg(1), WReg(1), 2);
+      e.add(XReg(0), e.sp, kVStashOffset);
+      e.ldr(i.dest, ptr(XReg(0), XReg(1)));
+    }
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_EXTRACT, EXTRACT_I8, EXTRACT_I16, EXTRACT_I32);
+
+// ============================================================================
+// OPCODE_SPLAT
+// ============================================================================
+// Copy a value into all elements of a vector.
+struct SPLAT_I8 : Sequence<SPLAT_I8, I<OPCODE_SPLAT, V128Op, I8Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const VReg16B dest_b(i.dest.reg().getIdx());
+    if (i.src1.is_constant) {
+      e.MovConst(WReg(0), uint8_t(i.src1.constant()));
+      e.dup(dest_b, WReg(0));
+    } else {
+      e.dup(dest_b, i.src1);
+    }
+  }
+};
+struct SPLAT_I16 : Sequence<SPLAT_I16, I<OPCODE_SPLAT, V128Op, I16Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const VReg8H dest_h(i.dest.reg().getIdx());
+    if (i.src1.is_constant) {
+      e.MovConst(WReg(0), uint16_t(i.src1.constant()));
+      e.dup(dest_h, WReg(0));
+    } else {
+      e.dup(dest_h, i.src1);
+    }
+  }
+};
+struct SPLAT_I32 : Sequence<SPLAT_I32, I<OPCODE_SPLAT, V128Op, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const VReg4S dest_s(i.dest.reg().getIdx());
+    if (i.src1.is_constant) {
+      e.MovConst(WReg(0), uint32_t(i.src1.constant()));
+      e.dup(dest_s, WReg(0));
+    } else {
+      e.dup(dest_s, i.src1);
+    }
+  }
+};
+struct SPLAT_F32 : Sequence<SPLAT_F32, I<OPCODE_SPLAT, V128Op, F32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const VReg4S dest_s(i.dest.reg().getIdx());
+    if (i.src1.is_constant) {
+      e.MovConst(WReg(0), uint32_t(i.src1.value->constant.i32));
+      e.dup(dest_s, WReg(0));
+    } else {
+      e.dup(dest_s, VReg4S(i.src1.reg().getIdx())[0]);
+    }
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_SPLAT, SPLAT_I8, SPLAT_I16, SPLAT_I32, SPLAT_F32);
+
+// ============================================================================
 // OPCODE_PACK
 // ============================================================================
 struct PACK : Sequence<PACK, I<OPCODE_PACK, V128Op, V128Op, V128Op>> {

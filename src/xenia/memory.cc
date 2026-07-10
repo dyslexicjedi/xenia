@@ -1221,8 +1221,40 @@ bool BaseHeap::Protect(uint32_t address, uint32_t size, uint32_t protect,
       *old_protect = FromPageAccess(old_protect_access);
     }
   } else {
-    XELOGW("BaseHeap::Protect: ignoring request as not 4k page aligned");
-    return false;
+    // The host page size is coarser than the requested range's alignment
+    // (16 KB host pages vs 4 KB guest pages on Apple Silicon). The guest page
+    // table updated below stays the authority on guest-visible protection;
+    // apply the closest host-side change that keeps the requested range
+    // correct: when making pages accessible, widen to every host page
+    // containing the range (accesses to it must not fault - for physical
+    // heaps this matches TriggerCallbacks' unwatch granularity, which is also
+    // whole host pages); when restricting, shrink to the host pages fully
+    // inside the range (partially covered pages keep their old, more
+    // permissive access and only lose the host-level trap).
+    size_t host_page_size = xe::memory::page_size();
+    memory::PageAccess access = ToPageAccess(protect);
+    uintptr_t host_start = reinterpret_cast<uintptr_t>(
+        TranslateRelative(size_t(start_page_number) * page_size_));
+    uintptr_t host_end = host_start + size_t(page_count) * page_size_;
+    if (access == memory::PageAccess::kReadWrite) {
+      host_start &= ~uintptr_t(host_page_size - 1);
+      host_end =
+          (host_end + host_page_size - 1) & ~uintptr_t(host_page_size - 1);
+    } else {
+      host_start =
+          (host_start + host_page_size - 1) & ~uintptr_t(host_page_size - 1);
+      host_end &= ~uintptr_t(host_page_size - 1);
+    }
+    if (host_start < host_end) {
+      if (!xe::memory::Protect(reinterpret_cast<void*>(host_start),
+                               host_end - host_start, access, nullptr)) {
+        XELOGE("BaseHeap::Protect failed due to host VirtualProtect failure");
+        return false;
+      }
+    }
+    if (old_protect) {
+      *old_protect = page_table_[start_page_number].current_protect;
+    }
   }
 
   // Perform table change.

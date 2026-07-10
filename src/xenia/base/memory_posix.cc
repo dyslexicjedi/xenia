@@ -209,7 +209,47 @@ bool Protect(void* base_address, size_t length, PageAccess access,
 }
 
 bool QueryProtect(void* base_address, size_t& length, PageAccess& access_out) {
+#if XE_PLATFORM_MAC
+  mach_vm_address_t region_address =
+      reinterpret_cast<mach_vm_address_t>(base_address);
+  mach_vm_size_t region_size = 0;
+  vm_region_basic_info_data_64_t info;
+  mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
+  mach_port_t object_name = MACH_PORT_NULL;
+  kern_return_t result = mach_vm_region(
+      mach_task_self(), &region_address, &region_size, VM_REGION_BASIC_INFO_64,
+      reinterpret_cast<vm_region_info_t>(&info), &info_count, &object_name);
+  if (object_name != MACH_PORT_NULL) {
+    mach_port_deallocate(mach_task_self(), object_name);
+  }
+  if (result != KERN_SUCCESS) {
+    return false;
+  }
+  // mach_vm_region returns the region containing the address, or the first
+  // one above it - the latter means the queried address itself is unmapped.
+  if (region_address > reinterpret_cast<mach_vm_address_t>(base_address)) {
+    access_out = PageAccess::kNoAccess;
+    length = region_address - reinterpret_cast<mach_vm_address_t>(base_address);
+    return true;
+  }
+  bool can_read = (info.protection & VM_PROT_READ) != 0;
+  bool can_write = (info.protection & VM_PROT_WRITE) != 0;
+  bool can_execute = (info.protection & VM_PROT_EXECUTE) != 0;
+  if (can_write) {
+    access_out =
+        can_execute ? PageAccess::kExecuteReadWrite : PageAccess::kReadWrite;
+  } else if (can_read) {
+    access_out =
+        can_execute ? PageAccess::kExecuteReadOnly : PageAccess::kReadOnly;
+  } else {
+    access_out = PageAccess::kNoAccess;
+  }
+  length = region_address + region_size -
+           reinterpret_cast<mach_vm_address_t>(base_address);
+  return true;
+#else
   return false;
+#endif  // XE_PLATFORM_MAC
 }
 
 FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path,

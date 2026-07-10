@@ -673,7 +673,19 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
             xma::GetPacketFrameOffset(packet) + packet_idx * kBitsPerPacket;
       }
       // TODO buffer bounds check
-      assert_true(data->input_buffer_read_offset < offset);
+      if (offset <= data->input_buffer_read_offset) {
+        // The decode position did not advance - the stream was mis-parsed (or
+        // is malformed). Drop the rest of this buffer instead of re-decoding
+        // the same frame forever; the game will kick us with fresh data.
+        XELOGE(
+            "XmaContext {}: decode offset not advancing ({} -> {}), dropping "
+            "input buffer",
+            id(), uint32_t(data->input_buffer_read_offset), offset);
+        if (!reuse_input_buffer) {
+          SwapInputBuffer(data);
+        }
+        break;
+      }
       data->input_buffer_read_offset = offset;
     }
   }

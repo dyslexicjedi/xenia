@@ -743,6 +743,93 @@ struct LOG2_V128 : Sequence<LOG2_V128, I<OPCODE_LOG2, V128Op, V128Op>> {
 EMITTER_OPCODE_TABLE(OPCODE_LOG2, LOG2_V128);
 
 // ============================================================================
+// OPCODE_VECTOR_CONVERT_I2F / OPCODE_VECTOR_CONVERT_F2I
+// ============================================================================
+// NEON converts are the AltiVec semantics natively: UCVTF rounds an
+// unsigned 32-bit value once (x64 needs a manual-rounding dance), and
+// FCVTZU/FCVTZS saturate with NaN -> 0 exactly like the x64 emulation.
+struct VECTOR_CONVERT_I2F
+    : Sequence<VECTOR_CONVERT_I2F,
+               I<OPCODE_VECTOR_CONVERT_I2F, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    const VReg4S dest_s(i.dest.reg().getIdx());
+    const VReg4S src_s(src1.getIdx());
+    if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+      e.ucvtf(dest_s, src_s);
+    } else {
+      e.scvtf(dest_s, src_s);
+    }
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_CONVERT_I2F, VECTOR_CONVERT_I2F);
+
+struct VECTOR_CONVERT_F2I
+    : Sequence<VECTOR_CONVERT_F2I,
+               I<OPCODE_VECTOR_CONVERT_F2I, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(0));
+    const VReg4S dest_s(i.dest.reg().getIdx());
+    const VReg4S src_s(src1.getIdx());
+    if (i.instr->flags & ARITHMETIC_UNSIGNED) {
+      e.fcvtzu(dest_s, src_s);
+    } else {
+      e.fcvtzs(dest_s, src_s);
+    }
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_VECTOR_CONVERT_F2I, VECTOR_CONVERT_F2I);
+
+// ============================================================================
+// OPCODE_DOT_PRODUCT_3 / OPCODE_DOT_PRODUCT_4
+// ============================================================================
+// Multiply, horizontal-add, and turn overflow (+-inf) into QNaN — the
+// equivalent of x64's dpps + MXCSR-overflow check. Input NaNs propagate
+// unchanged (FCMGE is false on unordered).
+namespace {
+
+void EmitDotProduct(A64Emitter& e, const SReg& dest, const QReg& s1,
+                    const QReg& s2, bool zero_lane3) {
+  e.fmul(VReg4S(0), VReg4S(s1.getIdx()), VReg4S(s2.getIdx()));
+  if (zero_lane3) {
+    e.ins(VReg4S(0)[3], e.wzr);
+  }
+  e.faddp(VReg4S(0), VReg4S(0), VReg4S(0));
+  e.faddp(SReg(0), VReg2S(0));
+  e.fabs(SReg(1), SReg(0));
+  e.MovConst(WReg(0), 0x7F800000u);
+  e.fmov(SReg(2), WReg(0));
+  e.fcmge(SReg(1), SReg(1), SReg(2));  // lane 0 all-ones on overflow
+  e.LoadVConst(QReg(2), VQNaN);
+  e.bit(VReg16B(0), VReg16B(2), VReg16B(1));
+  e.fmov(dest, SReg(0));
+}
+
+}  // namespace
+
+struct DOT_PRODUCT_3_V128
+    : Sequence<DOT_PRODUCT_3_V128,
+               I<OPCODE_DOT_PRODUCT_3, F32Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(1));
+    const QReg src2 = GetVWithConst(e, i.src2, QReg(2));
+    EmitDotProduct(e, i.dest, src1, src2, true);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_DOT_PRODUCT_3, DOT_PRODUCT_3_V128);
+
+struct DOT_PRODUCT_4_V128
+    : Sequence<DOT_PRODUCT_4_V128,
+               I<OPCODE_DOT_PRODUCT_4, F32Op, V128Op, V128Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    const QReg src1 = GetVWithConst(e, i.src1, QReg(1));
+    const QReg src2 = GetVWithConst(e, i.src2, QReg(2));
+    EmitDotProduct(e, i.dest, src1, src2, false);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_DOT_PRODUCT_4, DOT_PRODUCT_4_V128);
+
+// ============================================================================
 // OPCODE_LOAD_VECTOR_SHL / OPCODE_LOAD_VECTOR_SHR
 // ============================================================================
 static const vec128_t lvsl_table[16] = {

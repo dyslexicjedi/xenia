@@ -9,6 +9,9 @@
 
 #include "xenia/cpu/backend/a64/a64_sequences.h"
 
+#include <cmath>
+#include <cstring>
+
 #include "xenia/cpu/backend/a64/a64_op.h"
 
 namespace xe {
@@ -149,6 +152,48 @@ struct CONVERT_F64_F32
 EMITTER_OPCODE_TABLE(OPCODE_CONVERT, CONVERT_I32_F32, CONVERT_I32_F64,
                      CONVERT_I64_F64, CONVERT_F32_I32, CONVERT_F32_F64,
                      CONVERT_F64_I64, CONVERT_F64_F32);
+
+// ============================================================================
+// OPCODE_ROUND
+// ============================================================================
+template <typename REG>
+void EmitRound(A64Emitter& e, const REG& dest, const REG& src,
+               RoundMode mode) {
+  switch (mode) {
+    case ROUND_TO_ZERO:
+      e.frintz(dest, src);
+      break;
+    case ROUND_TO_NEAREST:
+      e.frintn(dest, src);
+      break;
+    case ROUND_TO_MINUS_INFINITY:
+      e.frintm(dest, src);
+      break;
+    case ROUND_TO_POSITIVE_INFINITY:
+      e.frintp(dest, src);
+      break;
+    case ROUND_DYNAMIC:
+      e.frinti(dest, src);
+      break;
+    default:
+      assert_unhandled_case(mode);
+      break;
+  }
+}
+
+struct ROUND_F32 : Sequence<ROUND_F32, I<OPCODE_ROUND, F32Op, F32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetF32WithConst(e, i.src1, SReg(0));
+    EmitRound(e, i.dest.reg(), src1, RoundMode(i.instr->flags));
+  }
+};
+struct ROUND_F64 : Sequence<ROUND_F64, I<OPCODE_ROUND, F64Op, F64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetF64WithConst(e, i.src1, DReg(0));
+    EmitRound(e, i.dest.reg(), src1, RoundMode(i.instr->flags));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_ROUND, ROUND_F32, ROUND_F64);
 
 // ============================================================================
 // OPCODE_IS_NAN
@@ -302,6 +347,126 @@ EMIT_FLOAT_UNARY(OPCODE_SQRT, SQRT, fsqrt);
 #undef EMIT_FLOAT_UNARY
 
 // ============================================================================
+// OPCODE_RSQRT / OPCODE_RECIP
+// ============================================================================
+struct RSQRT_F32 : Sequence<RSQRT_F32, I<OPCODE_RSQRT, F32Op, F32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetF32WithConst(e, i.src1, SReg(1));
+    e.fsqrt(SReg(1), src1);
+    e.fmov(SReg(0), 1.0);
+    e.fdiv(i.dest, SReg(0), SReg(1));
+  }
+};
+struct RSQRT_F64 : Sequence<RSQRT_F64, I<OPCODE_RSQRT, F64Op, F64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetF64WithConst(e, i.src1, DReg(1));
+    e.fsqrt(DReg(1), src1);
+    e.fmov(DReg(0), 1.0);
+    e.fdiv(i.dest, DReg(0), DReg(1));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_RSQRT, RSQRT_F32, RSQRT_F64);
+
+struct RECIP_F32 : Sequence<RECIP_F32, I<OPCODE_RECIP, F32Op, F32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetF32WithConst(e, i.src1, SReg(1));
+    e.fmov(SReg(0), 1.0);
+    e.fdiv(i.dest, SReg(0), src1);
+  }
+};
+struct RECIP_F64 : Sequence<RECIP_F64, I<OPCODE_RECIP, F64Op, F64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetF64WithConst(e, i.src1, DReg(1));
+    e.fmov(DReg(0), 1.0);
+    e.fdiv(i.dest, DReg(0), src1);
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_RECIP, RECIP_F32, RECIP_F64);
+
+// ============================================================================
+// OPCODE_POW2 / OPCODE_LOG2
+// ============================================================================
+template <typename T, T (*FN)(T)>
+uint64_t EmulateUnaryFloat(void*, uint64_t bits) {
+  T value;
+  std::memcpy(&value, &bits, sizeof(value));
+  T result = FN(value);
+  uint64_t result_bits = 0;
+  std::memcpy(&result_bits, &result, sizeof(result));
+  return result_bits;
+}
+
+float Pow2F32(float value) { return std::exp2(value); }
+double Pow2F64(double value) { return std::exp2(value); }
+float Log2F32(float value) { return std::log2(value); }
+double Log2F64(double value) { return std::log2(value); }
+
+template <typename OP, typename REG, typename INT_REG,
+          uint64_t (*FN)(void*, uint64_t)>
+void EmitUnaryFloatHelper(A64Emitter& e, const OP& src, const REG& dest) {
+  auto src1 = GetFloatWithConst(e, src, REG(0));
+  e.fmov(INT_REG(1), src1);
+  e.CallNative(reinterpret_cast<uint64_t (*)(void*, uint64_t)>(FN));
+  e.fmov(dest, INT_REG(0));
+}
+
+#define EMIT_FLOAT_HELPER(OPCODE_NAME, NAME, F32_FN, F64_FN)                 \
+  struct NAME##_F32                                                         \
+      : Sequence<NAME##_F32, I<OPCODE_NAME, F32Op, F32Op>> {                \
+    static void Emit(A64Emitter& e, const EmitArgType& i) {                 \
+      EmitUnaryFloatHelper<F32Op, SReg, WReg,                               \
+                           EmulateUnaryFloat<float, F32_FN>>(e, i.src1,     \
+                                                             i.dest.reg()); \
+    }                                                                        \
+  };                                                                         \
+  struct NAME##_F64                                                         \
+      : Sequence<NAME##_F64, I<OPCODE_NAME, F64Op, F64Op>> {                \
+    static void Emit(A64Emitter& e, const EmitArgType& i) {                 \
+      EmitUnaryFloatHelper<F64Op, DReg, XReg,                               \
+                           EmulateUnaryFloat<double, F64_FN>>(e, i.src1,    \
+                                                              i.dest.reg());\
+    }                                                                        \
+  };                                                                         \
+  EMITTER_OPCODE_TABLE(OPCODE_NAME, NAME##_F32, NAME##_F64)
+
+EMIT_FLOAT_HELPER(OPCODE_POW2, POW2, Pow2F32, Pow2F64);
+EMIT_FLOAT_HELPER(OPCODE_LOG2, LOG2, Log2F32, Log2F64);
+
+#undef EMIT_FLOAT_HELPER
+
+// ============================================================================
+// OPCODE_MAX / OPCODE_MIN
+// ============================================================================
+// Match x64 scalar MIN/MAX semantics: src2 wins for equal values and whenever
+// either operand is NaN. This also preserves src2's signed zero and NaN payload.
+#define EMIT_FLOAT_MIN_MAX(OPCODE_NAME, NAME, CONDITION)            \
+  struct NAME##_F32                                                 \
+      : Sequence<NAME##_F32, I<OPCODE_NAME, F32Op, F32Op, F32Op>> { \
+    static void Emit(A64Emitter& e, const EmitArgType& i) {         \
+      auto src1 = GetF32WithConst(e, i.src1, SReg(0));              \
+      auto src2 = GetF32WithConst(e, i.src2, SReg(1));              \
+      e.fcmp(src1, src2);                                           \
+      e.fcsel(i.dest, src1, src2, CONDITION);                       \
+    }                                                               \
+  };                                                                \
+  struct NAME##_F64                                                 \
+      : Sequence<NAME##_F64, I<OPCODE_NAME, F64Op, F64Op, F64Op>> { \
+    static void Emit(A64Emitter& e, const EmitArgType& i) {         \
+      auto src1 = GetF64WithConst(e, i.src1, DReg(0));              \
+      auto src2 = GetF64WithConst(e, i.src2, DReg(1));              \
+      e.fcmp(src1, src2);                                           \
+      e.fcsel(i.dest, src1, src2, CONDITION);                       \
+    }                                                               \
+  };                                                                \
+  EMITTER_OPCODE_TABLE(OPCODE_NAME, NAME##_F32, NAME##_F64)
+
+EMIT_FLOAT_MIN_MAX(OPCODE_MAX, MAX, Cond::GT);
+// MI is true only for ordered less-than after FCMP; LT is also true for NaN.
+EMIT_FLOAT_MIN_MAX(OPCODE_MIN, MIN, Cond::MI);
+
+#undef EMIT_FLOAT_MIN_MAX
+
+// ============================================================================
 // OPCODE_SELECT
 // ============================================================================
 struct SELECT_F32
@@ -323,6 +488,38 @@ struct SELECT_F64
   }
 };
 EMITTER_OPCODE_TABLE(OPCODE_SELECT, SELECT_F32, SELECT_F64);
+
+// ============================================================================
+// OPCODE_SET_ROUNDING_MODE
+// ============================================================================
+// Input is the low three bits of the PPC FPSCR: RN in bits 0-1 and NI/FZ in
+// bit 2. FPCR uses a different RN encoding in bits 22-23 and FZ in bit 24.
+static const uint32_t fpcr_mode_table[] = {
+    0x00000000, 0x00C00000, 0x00400000, 0x00800000,
+    0x01000000, 0x01C00000, 0x01400000, 0x01800000,
+};
+
+struct SET_ROUNDING_MODE_I32
+    : Sequence<SET_ROUNDING_MODE_I32,
+               I<OPCODE_SET_ROUNDING_MODE, VoidOp, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto src1 = GetWithConst(e, i.src1, WReg(0));
+    e.and_(WReg(0), src1, 0x7);
+    e.MovConst(XReg(1), reinterpret_cast<uint64_t>(fpcr_mode_table));
+    e.add(XReg(1), XReg(1), XReg(0), LSL, 2);
+    e.ldr(WReg(0), ptr(XReg(1)));
+
+    // FPCR is system register S3_3_C4_C4_0. Xbyak encodes the fixed high bit
+    // of op0 internally, so S3 is passed as its low bit (1). Preserve
+    // exception-control and default-NaN bits while replacing only RMode/FZ.
+    e.mrs(XReg(1), 1, 3, 4, 4, 0);
+    e.MovConst(XReg(2), ~(uint64_t(0x7) << 22));
+    e.and_(XReg(1), XReg(1), XReg(2));
+    e.orr(XReg(1), XReg(1), XReg(0));
+    e.msr(1, 3, 4, 4, 0, XReg(1));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_SET_ROUNDING_MODE, SET_ROUNDING_MODE_I32);
 
 }  // namespace
 

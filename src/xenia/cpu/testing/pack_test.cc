@@ -92,7 +92,10 @@ TEST_CASE("PACK_SHORT_2", "[instr]") {
   test.Run([](PPCContext* ctx) { ctx->v[4] = vec128i(0); },
            [](PPCContext* ctx) {
              auto result = ctx->v[3];
-             REQUIRE(result == vec128i(0));
+             // The packed SHORT format is 3.0-biased. Zero is below the
+             // representable range and clamps to the hardware-observed
+             // minimum in both lanes.
+             REQUIRE(result == vec128i(0, 0, 0, 0x80018001));
            });
   test.Run(
       [](PPCContext* ctx) {

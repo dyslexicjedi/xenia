@@ -170,6 +170,42 @@ EMITTER_OPCODE_TABLE(OPCODE_STORE_LOCAL, STORE_LOCAL_I8, STORE_LOCAL_I16,
                      STORE_LOCAL_F64, STORE_LOCAL_V128);
 
 // ============================================================================
+// OPCODE_LOAD_MMIO / OPCODE_STORE_MMIO
+// ============================================================================
+struct LOAD_MMIO_I32
+    : Sequence<LOAD_MMIO_I32, I<OPCODE_LOAD_MMIO, I32Op, OffsetOp, OffsetOp>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto* mmio_range = reinterpret_cast<MMIORange*>(i.src1.value);
+    e.MovConst(e.GetNativeParam(0),
+               reinterpret_cast<uint64_t>(mmio_range->callback_context));
+    e.MovConst(e.GetNativeParam(1), uint32_t(i.src2.value));
+    e.CallNativeSafe(reinterpret_cast<void*>(mmio_range->read));
+    e.rev(WReg(0), WReg(0));
+    e.mov(i.dest, WReg(0));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_LOAD_MMIO, LOAD_MMIO_I32);
+
+struct STORE_MMIO_I32
+    : Sequence<STORE_MMIO_I32,
+               I<OPCODE_STORE_MMIO, VoidOp, OffsetOp, OffsetOp, I32Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    auto* mmio_range = reinterpret_cast<MMIORange*>(i.src1.value);
+    e.MovConst(e.GetNativeParam(0),
+               reinterpret_cast<uint64_t>(mmio_range->callback_context));
+    e.MovConst(e.GetNativeParam(1), uint32_t(i.src2.value));
+    if (i.src3.is_constant) {
+      e.MovConst(WReg(e.GetNativeParam(2).getIdx()),
+                 xe::byte_swap(uint32_t(i.src3.constant())));
+    } else {
+      e.rev(WReg(e.GetNativeParam(2).getIdx()), i.src3.reg());
+    }
+    e.CallNativeSafe(reinterpret_cast<void*>(mmio_range->write));
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_STORE_MMIO, STORE_MMIO_I32);
+
+// ============================================================================
 // OPCODE_LOAD
 // ============================================================================
 struct LOAD_I8 : Sequence<LOAD_I8, I<OPCODE_LOAD, I8Op, I64Op>> {
@@ -562,6 +598,54 @@ struct ATOMIC_COMPARE_EXCHANGE_I64
 };
 EMITTER_OPCODE_TABLE(OPCODE_ATOMIC_COMPARE_EXCHANGE,
                      ATOMIC_COMPARE_EXCHANGE_I32, ATOMIC_COMPARE_EXCHANGE_I64);
+
+// ============================================================================
+// OPCODE_CACHE_CONTROL
+// ============================================================================
+struct CACHE_CONTROL
+    : Sequence<CACHE_CONTROL,
+               I<OPCODE_CACHE_CONTROL, VoidOp, I64Op, OffsetOp>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    ComputeMemoryAddress(e, i.src1);
+    e.add(XReg(0), e.GetMembaseReg(), XReg(0));
+
+    const auto type = CacheControlType(i.instr->flags);
+    auto emit_line = [&e, type]() {
+      switch (type) {
+        case CacheControlType::CACHE_CONTROL_TYPE_DATA_TOUCH:
+          e.prfm(PLDL1KEEP, ptr(XReg(0)));
+          break;
+        case CacheControlType::CACHE_CONTROL_TYPE_DATA_TOUCH_FOR_STORE:
+          e.prfm(PSTL1KEEP, ptr(XReg(0)));
+          break;
+        case CacheControlType::CACHE_CONTROL_TYPE_DATA_STORE:
+          e.sys(3, 7, 10, 1, XReg(0));  // DC CVAC, x0.
+          break;
+        case CacheControlType::CACHE_CONTROL_TYPE_DATA_STORE_AND_FLUSH:
+          e.sys(3, 7, 14, 1, XReg(0));  // DC CIVAC, x0.
+          break;
+        default:
+          assert_unhandled_case(type);
+          break;
+      }
+    };
+
+    emit_line();
+    const size_t cache_line_size = i.src2.value;
+    if (cache_line_size >= 128) {
+      // Also touch the other 64-byte host line on implementations whose
+      // cache line is smaller than the Xenon 128-byte line.
+      e.eor(XReg(0), XReg(0), 64);
+      emit_line();
+      assert_true(cache_line_size == 128);
+    }
+    if (type == CacheControlType::CACHE_CONTROL_TYPE_DATA_STORE ||
+        type == CacheControlType::CACHE_CONTROL_TYPE_DATA_STORE_AND_FLUSH) {
+      e.dsb(ISH);
+    }
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_CACHE_CONTROL, CACHE_CONTROL);
 
 // ============================================================================
 // OPCODE_MEMORY_BARRIER

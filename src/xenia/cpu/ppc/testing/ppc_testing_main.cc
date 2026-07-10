@@ -35,7 +35,10 @@ DEFINE_path(test_path, "src/xenia/cpu/ppc/testing/",
             "Directory scanned for test files.", "Other");
 DEFINE_path(test_bin_path, "src/xenia/cpu/ppc/testing/bin/",
             "Directory with binary outputs of the test files.", "Other");
-DEFINE_transient_string(test_name, "", "Test suite name.", "General");
+DEFINE_transient_string(test_name, "",
+                        "Test suite name filter (comma-separated; trailing * "
+                        "matches a prefix).",
+                        "General");
 
 namespace xe {
 namespace cpu {
@@ -465,9 +468,32 @@ bool RunTests(const std::string_view test_name) {
 
   std::vector<TestSuite> test_suites;
   bool load_failed = false;
+  auto matches_test_name = [test_name](std::string_view suite_name) {
+    if (test_name.empty()) {
+      return true;
+    }
+    size_t start = 0;
+    while (start <= test_name.size()) {
+      const size_t comma = test_name.find(',', start);
+      const size_t end = comma == std::string_view::npos ? test_name.size()
+                                                         : comma;
+      const std::string_view pattern = test_name.substr(start, end - start);
+      if ((!pattern.empty() && pattern.back() == '*' &&
+           suite_name.substr(0, pattern.size() - 1) ==
+               pattern.substr(0, pattern.size() - 1)) ||
+          suite_name == pattern) {
+        return true;
+      }
+      if (comma == std::string_view::npos) {
+        break;
+      }
+      start = comma + 1;
+    }
+    return false;
+  };
   for (auto& test_path : test_files) {
     TestSuite test_suite(test_path);
-    if (!test_name.empty() && test_suite.name() != test_name) {
+    if (!matches_test_name(test_suite.name())) {
       continue;
     }
     if (!test_suite.Load()) {

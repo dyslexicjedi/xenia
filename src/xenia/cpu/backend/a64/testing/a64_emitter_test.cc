@@ -10,11 +10,14 @@
 #include <cstdint>
 #include <cstring>
 
+#include "xenia/base/exception_handler.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/platform.h"
 #include "xenia/cpu/backend/a64/a64_backend.h"
 #include "xenia/cpu/breakpoint.h"
+#include "xenia/cpu/processor.h"
 #include "xenia/cpu/thread_debug_info.h"
+#include "xenia/memory.h"
 
 #include "third_party/catch/include/catch.hpp"
 #include "third_party/xbyak_aarch64/xbyak_aarch64/xbyak_aarch64.h"
@@ -144,6 +147,62 @@ TEST_CASE("install_and_uninstall_breakpoint", "[a64_debugger]") {
   REQUIRE(breakpoint.backend_data().empty());
 
   xe::memory::DeallocFixed(memory, length,
+                           xe::memory::DeallocationType::kRelease);
+}
+
+namespace {
+
+class BreakpointRoutingTestBackend final : public A64Backend {
+ public:
+  bool breakpoint_dispatched = false;
+
+ protected:
+  bool DispatchBreakpointException(Exception* ex) override {
+    breakpoint_dispatched = true;
+    ex->set_resume_pc(ex->pc() + sizeof(uint32_t));
+    return true;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("breakpoint_exception_routes_through_a64_backend",
+          "[a64_debugger]") {
+  // Initialize the production exception registration path, then execute a
+  // patched instruction for real. Darwin must deliver SIGILL to A64Backend,
+  // which recognizes UDF #0xDEAD and reaches the same virtual dispatch point
+  // whose production implementation calls Processor::OnThreadBreakpointHit.
+  Memory memory;
+  REQUIRE(memory.Initialize());
+  Processor processor(&memory, nullptr);
+  auto backend = std::make_unique<BreakpointRoutingTestBackend>();
+  auto* backend_ptr = backend.get();
+  REQUIRE(processor.Setup(std::move(backend)));
+
+  const size_t length = xe::memory::page_size();
+  void* code = xe::memory::AllocFixed(
+      nullptr, length, xe::memory::AllocationType::kReserveCommit,
+      xe::memory::PageAccess::kExecuteReadWrite);
+  REQUIRE(code != nullptr);
+
+  constexpr uint32_t kNop = UINT32_C(0xD503201F);
+  constexpr uint32_t kRet = UINT32_C(0xD65F03C0);
+  xe::memory::SetJitThreadWriteAccess(true);
+  std::memcpy(code, &kNop, sizeof(kNop));
+  std::memcpy(static_cast<uint8_t*>(code) + sizeof(kNop), &kRet, sizeof(kRet));
+  xe::memory::SetJitThreadWriteAccess(false);
+  xe::memory::FlushInstructionCache(code, 2 * sizeof(uint32_t));
+
+  Breakpoint breakpoint(
+      &processor, Breakpoint::AddressType::kHost,
+      reinterpret_cast<uint64_t>(code),
+      [](Breakpoint*, ThreadDebugInfo*, uint64_t) {});
+  backend_ptr->InstallBreakpoint(&breakpoint);
+  reinterpret_cast<void (*)()>(code)();
+  REQUIRE(backend_ptr->breakpoint_dispatched);
+
+  backend_ptr->UninstallBreakpoint(&breakpoint);
+  xe::memory::DeallocFixed(code, length,
                            xe::memory::DeallocationType::kRelease);
 }
 

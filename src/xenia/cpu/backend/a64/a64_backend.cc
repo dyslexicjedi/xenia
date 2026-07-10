@@ -351,6 +351,10 @@ bool A64Backend::ExceptionCallback(Exception* ex) {
     return false;
   }
 
+  return DispatchBreakpointException(ex);
+}
+
+bool A64Backend::DispatchBreakpointException(Exception* ex) {
   return processor()->OnThreadBreakpointHit(ex);
 }
 

@@ -15,9 +15,6 @@
 
 #include "xenia/cpu/backend/a64/a64_op.h"
 
-// For OPCODE_PACK/OPCODE_UNPACK FLOAT16 emulation.
-#include "third_party/half/include/half.hpp"
-
 namespace xe {
 namespace cpu {
 namespace backend {
@@ -47,6 +44,73 @@ constexpr int32_t kVStashOffset = 48;
 void StashVForCall(A64Emitter& e, const QReg& src) {
   e.str(src, ptr(e.sp, kVStashOffset));
   e.add(e.GetNativeParam(0), e.sp, kVStashOffset);
+}
+
+// vpkd3d128/vupkd3d128 use the Xbox 360's D3D9-era 16-bit float format.
+// Unlike IEEE binary16, exponent 31 is finite, giving a maximum of 131008.
+// Conversion to it rounds to nearest-even and saturates instead of producing
+// infinities or NaNs.
+uint16_t FloatToXenosFloat16(float value) {
+  uint32_t bits;
+  std::memcpy(&bits, &value, sizeof(bits));
+  const uint16_t sign = static_cast<uint16_t>((bits >> 16) & 0x8000);
+  const uint32_t magnitude = bits & 0x7FFFFFFF;
+  const uint32_t exponent = magnitude >> 23;
+  const uint32_t mantissa = magnitude & 0x7FFFFF;
+
+  if (exponent == 0xFF || magnitude >= 0x47FFE000) {
+    return static_cast<uint16_t>(sign | 0x7FFF);
+  }
+  if (!magnitude) {
+    return sign;
+  }
+
+  uint32_t result;
+  if (exponent < 113) {
+    if (!exponent) {
+      return sign;
+    }
+    const uint32_t significand = mantissa | 0x800000;
+    const uint32_t shift = 126 - exponent;
+    if (shift > 24) {
+      return sign;
+    }
+    result = significand >> shift;
+    const uint32_t remainder_mask = (UINT32_C(1) << shift) - 1;
+    const uint32_t remainder = significand & remainder_mask;
+    const uint32_t halfway = UINT32_C(1) << (shift - 1);
+    if (remainder > halfway || (remainder == halfway && (result & 1))) {
+      ++result;
+    }
+  } else {
+    result = ((exponent - 112) << 10) | (mantissa >> 13);
+    const uint32_t remainder = mantissa & 0x1FFF;
+    if (remainder > 0x1000 || (remainder == 0x1000 && (result & 1))) {
+      ++result;
+    }
+  }
+  return static_cast<uint16_t>(sign | std::min(result, UINT32_C(0x7FFF)));
+}
+
+float XenosFloat16ToFloat(uint16_t value) {
+  const uint32_t sign = uint32_t(value & 0x8000) << 16;
+  const uint32_t exponent = (value >> 10) & 0x1F;
+  const uint32_t mantissa = value & 0x3FF;
+  uint32_t bits;
+  if (!exponent) {
+    if (!mantissa) {
+      bits = sign;
+    } else {
+      float result = std::ldexp(static_cast<float>(mantissa), -24);
+      std::memcpy(&bits, &result, sizeof(bits));
+      bits |= sign;
+    }
+  } else {
+    bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+  }
+  float result;
+  std::memcpy(&result, &bits, sizeof(result));
+  return result;
 }
 
 }  // namespace
@@ -1445,7 +1509,7 @@ struct PACK : Sequence<PACK, I<OPCODE_PACK, V128Op, V128Op, V128Op>> {
     std::memcpy(a, v, sizeof(a));
     std::memset(b, 0, sizeof(b));
     for (int k = 0; k < 2; ++k) {
-      b[7 - k] = half_float::detail::float2half<std::round_toward_zero>(a[k]);
+      b[7 - k] = FloatToXenosFloat16(a[k]);
     }
     std::memcpy(v, b, sizeof(b));
   }
@@ -1465,8 +1529,7 @@ struct PACK : Sequence<PACK, I<OPCODE_PACK, V128Op, V128Op, V128Op>> {
     std::memcpy(a, v, sizeof(a));
     std::memset(b, 0, sizeof(b));
     for (int k = 0; k < 4; ++k) {
-      b[7 - (k ^ 2)] =
-          half_float::detail::float2half<std::round_toward_zero>(a[k]);
+      b[7 - (k ^ 2)] = FloatToXenosFloat16(a[k]);
     }
     std::memcpy(v, b, sizeof(b));
   }
@@ -1759,31 +1822,34 @@ struct UNPACK : Sequence<UNPACK, I<OPCODE_UNPACK, V128Op, V128Op>> {
     e.orr(dest_b, dest_b, temp_b);
   }
   static void EmitFLOAT16_2(A64Emitter& e, const EmitArgType& i) {
-    // Half->float is exact regardless of rounding mode, so unpack natively:
-    // shuffle the two halves into h[0]/h[1], widen, then set w to 1.0f.
-    const VReg16B dest_b(i.dest.reg().getIdx());
-    const VReg4S dest_s(i.dest.reg().getIdx());
-    const VReg4H dest_h4(i.dest.reg().getIdx());
-    const QReg temp(1);
-    const VReg16B temp_b(1);
     const QReg src = GetVWithConst(e, i.src1, QReg(0));
-    e.LoadVConst(temp, VUnpackFLOAT16_2);
-    e.tbl(dest_b, VReg16BList(VReg16B(src.getIdx())), temp_b);
-    e.fcvtl(dest_s, dest_h4);
-    // dest = [x, y, 0, 1.0f]
-    e.LoadVConst(temp, V0001);
-    e.orr(dest_b, dest_b, temp_b);
+    StashVForCall(e, src);
+    e.CallNativeSafe(reinterpret_cast<void*>(EmulateFLOAT16_2));
+    e.ldr(i.dest, ptr(e.sp, kVStashOffset));
+  }
+  static void EmulateFLOAT16_2(void*, vec128_t* v) {
+    alignas(16) uint16_t a[8];
+    alignas(16) float b[4] = {};
+    std::memcpy(a, v, sizeof(a));
+    b[0] = XenosFloat16ToFloat(a[7]);
+    b[1] = XenosFloat16ToFloat(a[6]);
+    b[3] = 1.0f;
+    std::memcpy(v, b, sizeof(b));
   }
   static void EmitFLOAT16_4(A64Emitter& e, const EmitArgType& i) {
-    const VReg16B dest_b(i.dest.reg().getIdx());
-    const VReg4S dest_s(i.dest.reg().getIdx());
-    const VReg4H dest_h4(i.dest.reg().getIdx());
-    const QReg temp(1);
-    const VReg16B temp_b(1);
     const QReg src = GetVWithConst(e, i.src1, QReg(0));
-    e.LoadVConst(temp, VUnpackFLOAT16_4);
-    e.tbl(dest_b, VReg16BList(VReg16B(src.getIdx())), temp_b);
-    e.fcvtl(dest_s, dest_h4);
+    StashVForCall(e, src);
+    e.CallNativeSafe(reinterpret_cast<void*>(EmulateFLOAT16_4));
+    e.ldr(i.dest, ptr(e.sp, kVStashOffset));
+  }
+  static void EmulateFLOAT16_4(void*, vec128_t* v) {
+    alignas(16) uint16_t a[8];
+    alignas(16) float b[4];
+    std::memcpy(a, v, sizeof(a));
+    for (int k = 0; k < 4; ++k) {
+      b[k] = XenosFloat16ToFloat(a[7 - (k ^ 2)]);
+    }
+    std::memcpy(v, b, sizeof(b));
   }
   static void EmitSHORT_2(A64Emitter& e, const EmitArgType& i) {
     // (VD.x) = 3.0 + (VB.x>>16)*2^-22

@@ -64,6 +64,12 @@ class A64Backend : public Backend {
   void InstallBreakpoint(Breakpoint* breakpoint, Function* fn) override;
   void UninstallBreakpoint(Breakpoint* breakpoint) override;
 
+ protected:
+  // Split out so the native exception-routing smoke test can resume after the
+  // breakpoint without constructing a kernel Thread. Production dispatch
+  // always forwards to Processor::OnThreadBreakpointHit.
+  virtual bool DispatchBreakpointException(Exception* ex);
+
  private:
   static bool ExceptionCallbackThunk(Exception* ex, void* data);
   bool ExceptionCallback(Exception* ex);

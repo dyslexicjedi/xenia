@@ -28,6 +28,7 @@ project("discord-rpc")
     })
   filter("platforms:Mac")
     files({
+      "discord-rpc/src/connection_unix.cpp",
       "discord-rpc/src/discord_register_osx.m"
     })
   filter("platforms:Windows")

@@ -4,6 +4,7 @@
 --
 
 local sdl2_sys_includedirs = {}
+local sdl2_sys_libdirs = {}
 local third_party_path = os.getcwd()
 
 if os.istarget("windows") then
@@ -19,6 +20,12 @@ else
   else
     error("Failed to run 'sdl2-config'. Are libsdl2 development files installed?")
   end
+  local libs_result = os.outputof("sdl2-config --libs")
+  if libs_result then
+    for dir in string.gmatch(libs_result, "-L([%S]+)") do
+      table.insert(sdl2_sys_libdirs, dir)
+    end
+  end
 end
 
 
@@ -32,5 +39,16 @@ function sdl2_include()
     })
   filter("platforms:Linux or platforms:Mac")
     includedirs(sdl2_sys_includedirs)
+  filter({})
+end
+
+--
+-- Call this function in project scope to link against the system SDL2
+-- (Linux and Mac; Windows links the static SDL2 project directly).
+--
+function sdl2_link()
+  filter("platforms:Linux or platforms:Mac")
+    libdirs(sdl2_sys_libdirs)
+    links({"SDL2"})
   filter({})
 end

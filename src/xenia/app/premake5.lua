@@ -106,8 +106,9 @@ project("xenia-app")
       "X11",
       "xcb",
       "X11-xcb",
-      "SDL2",
     })
+  filter({})
+  sdl2_link()
 
   filter("platforms:Windows")
     links({

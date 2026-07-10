@@ -656,6 +656,37 @@ struct MEMORY_BARRIER
 };
 EMITTER_OPCODE_TABLE(OPCODE_MEMORY_BARRIER, MEMORY_BARRIER);
 
+// ============================================================================
+// OPCODE_MEMSET
+// ============================================================================
+// Only emitted for dcbz/dcbz128 (zero a 32- or 128-byte cache block).
+struct MEMSET_I64_I8_I64
+    : Sequence<MEMSET_I64_I8_I64,
+               I<OPCODE_MEMSET, VoidOp, I64Op, I8Op, I64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    assert_true(i.src2.is_constant);
+    assert_true(i.src3.is_constant);
+    assert_true(i.src2.constant() == 0);
+    e.movi(VReg16B(0), 0);
+    ComputeMemoryAddress(e, i.src1);  // Host offset into x0.
+    e.add(XReg(0), e.GetMembaseReg(), XReg(0));
+    switch (i.src3.constant()) {
+      case 128:
+        e.stp(QReg(0), QReg(0), ptr(XReg(0), 96));
+        e.stp(QReg(0), QReg(0), ptr(XReg(0), 64));
+        e.stp(QReg(0), QReg(0), ptr(XReg(0), 32));
+        [[fallthrough]];
+      case 32:
+        e.stp(QReg(0), QReg(0), ptr(XReg(0)));
+        break;
+      default:
+        assert_unhandled_case(i.src3.constant());
+        break;
+    }
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_MEMSET, MEMSET_I64_I8_I64);
+
 }  // namespace a64
 }  // namespace backend
 }  // namespace cpu

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstring>
 
+#include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
 #include "xenia/cpu/backend/a64/a64_op.h"
 
@@ -60,6 +61,22 @@ struct CONTEXT_BARRIER
 EMITTER_OPCODE_TABLE(OPCODE_CONTEXT_BARRIER, CONTEXT_BARRIER);
 
 // ============================================================================
+// OPCODE_LOAD_CLOCK
+// ============================================================================
+struct LOAD_CLOCK : Sequence<LOAD_CLOCK, I<OPCODE_LOAD_CLOCK, I64Op>> {
+  static void Emit(A64Emitter& e, const EmitArgType& i) {
+    // TODO(macos): fast path reading CNTVCT_EL0 directly when scaling is
+    // disabled and the raw clock source is selected (x64 uses rdtsc here).
+    e.CallNative(LoadClock);
+    e.mov(i.dest, XReg(0));
+  }
+  static uint64_t LoadClock(void* raw_context) {
+    return Clock::QueryGuestTickCount();
+  }
+};
+EMITTER_OPCODE_TABLE(OPCODE_LOAD_CLOCK, LOAD_CLOCK);
+
+// ============================================================================
 // OPCODE_SOURCE_OFFSET
 // ============================================================================
 struct SOURCE_OFFSET
@@ -77,6 +94,23 @@ static const QReg GetVWithConst(A64Emitter& e, const V128Op& src,
                                 const QReg& temp) {
   if (src.is_constant) {
     e.LoadConstantV(temp, src.constant());
+    return temp;
+  }
+  return src.reg();
+}
+
+// Scalar-float equivalents of GetVWithConst (v0/v1 scratch).
+static SReg GetSWithConst(A64Emitter& e, const F32Op& src, const SReg& temp) {
+  if (src.is_constant) {
+    e.LoadConstantV(QReg(temp.getIdx()), src.constant());
+    return temp;
+  }
+  return src.reg();
+}
+
+static DReg GetDWithConst(A64Emitter& e, const F64Op& src, const DReg& temp) {
+  if (src.is_constant) {
+    e.LoadConstantV(QReg(temp.getIdx()), src.constant());
     return temp;
   }
   return src.reg();
@@ -421,14 +455,16 @@ struct ADD_I64 : Sequence<ADD_I64, I<OPCODE_ADD, I64Op, I64Op, I64Op>> {
 };
 struct ADD_F32 : Sequence<ADD_F32, I<OPCODE_ADD, F32Op, F32Op, F32Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant && !i.src2.is_constant);
-    e.fadd(i.dest, i.src1, i.src2);
+    auto src1 = GetSWithConst(e, i.src1, SReg(0));
+    auto src2 = GetSWithConst(e, i.src2, SReg(1));
+    e.fadd(i.dest, src1, src2);
   }
 };
 struct ADD_F64 : Sequence<ADD_F64, I<OPCODE_ADD, F64Op, F64Op, F64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant && !i.src2.is_constant);
-    e.fadd(i.dest, i.src1, i.src2);
+    auto src1 = GetDWithConst(e, i.src1, DReg(0));
+    auto src2 = GetDWithConst(e, i.src2, DReg(1));
+    e.fadd(i.dest, src1, src2);
   }
 };
 struct ADD_V128 : Sequence<ADD_V128, I<OPCODE_ADD, V128Op, V128Op, V128Op>> {
@@ -471,14 +507,16 @@ struct SUB_I64 : Sequence<SUB_I64, I<OPCODE_SUB, I64Op, I64Op, I64Op>> {
 };
 struct SUB_F32 : Sequence<SUB_F32, I<OPCODE_SUB, F32Op, F32Op, F32Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant && !i.src2.is_constant);
-    e.fsub(i.dest, i.src1, i.src2);
+    auto src1 = GetSWithConst(e, i.src1, SReg(0));
+    auto src2 = GetSWithConst(e, i.src2, SReg(1));
+    e.fsub(i.dest, src1, src2);
   }
 };
 struct SUB_F64 : Sequence<SUB_F64, I<OPCODE_SUB, F64Op, F64Op, F64Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
-    assert_true(!i.src1.is_constant && !i.src2.is_constant);
-    e.fsub(i.dest, i.src1, i.src2);
+    auto src1 = GetDWithConst(e, i.src1, DReg(0));
+    auto src2 = GetDWithConst(e, i.src2, DReg(1));
+    e.fsub(i.dest, src1, src2);
   }
 };
 struct SUB_V128 : Sequence<SUB_V128, I<OPCODE_SUB, V128Op, V128Op, V128Op>> {

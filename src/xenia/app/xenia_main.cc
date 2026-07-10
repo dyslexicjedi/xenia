@@ -637,7 +637,14 @@ void EmulatorApp::EmulatorThread() {
   if (!path.empty()) {
     // Normalize the path and make absolute.
     auto abs_path = std::filesystem::absolute(path);
-    result = emulator_->LaunchPath(abs_path);
+    // CompleteLaunch sets the window icon and runs game config load callbacks,
+    // which expect the UI thread.
+    if (!app_context().CallInUIThreadSynchronous(
+            [this, &abs_path, &result]() {
+              result = emulator_->LaunchPath(abs_path);
+            })) {
+      result = X_STATUS_UNSUCCESSFUL;
+    }
     if (XFAILED(result)) {
       xe::FatalError(fmt::format("Failed to launch target: {:08X}", result));
       app_context().RequestDeferredQuit();
@@ -651,7 +658,8 @@ void EmulatorApp::EmulatorThread() {
     while (true) {
       emulator_->WaitUntilExit();
       if (emulator_->TitleRequested()) {
-        emulator_->LaunchNextTitle();
+        app_context().CallInUIThreadSynchronous(
+            [this]() { emulator_->LaunchNextTitle(); });
       } else {
         break;
       }

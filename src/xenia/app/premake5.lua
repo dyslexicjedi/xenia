@@ -71,6 +71,11 @@ project("xenia-app")
     links({
       "xenia-cpu-backend-x64",
     })
+  filter("architecture:ARM64")
+    links({
+      "xenia-cpu-backend-a64",
+      "xbyak_aarch64",
+    })
 
   -- TODO(Triang3l): The emulator itself on Android.
   filter("platforms:not Android-*")

@@ -19,6 +19,13 @@ test_suite("xenia-cpu-tests", project_root, ".", {
       links = {
         "xenia-cpu-backend-x64",
       },
+    },
+    {
+      filter = 'architecture:ARM64',
+      links = {
+        "xenia-cpu-backend-a64",
+        "xbyak_aarch64",
+      },
     }
   },
 })

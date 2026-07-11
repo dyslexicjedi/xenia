@@ -826,13 +826,17 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
     fsi_render_pass_create_info.dependencyCount =
         uint32_t(xe::countof(fsi_subpass_dependencies));
     fsi_render_pass_create_info.pDependencies = fsi_subpass_dependencies;
-    if (dfn.vkCreateRenderPass(device, &fsi_render_pass_create_info, nullptr,
-                               &fsi_render_pass_) != VK_SUCCESS) {
-      XELOGE(
-          "VulkanRenderTargetCache: Failed to create the fragment shader "
-          "interlock render backend render pass");
-      Shutdown();
-      return false;
+    // One render pass object per guest sample count - see
+    // GetFragmentShaderInterlockRenderPass.
+    for (size_t i = 0; i < xe::countof(fsi_render_passes_); ++i) {
+      if (dfn.vkCreateRenderPass(device, &fsi_render_pass_create_info, nullptr,
+                                 &fsi_render_passes_[i]) != VK_SUCCESS) {
+        XELOGE(
+            "VulkanRenderTargetCache: Failed to create the fragment shader "
+            "interlock render backend render pass");
+        Shutdown();
+        return false;
+      }
     }
 
     // Common framebuffer.
@@ -841,7 +845,10 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
         VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fsi_framebuffer_create_info.pNext = nullptr;
     fsi_framebuffer_create_info.flags = 0;
-    fsi_framebuffer_create_info.renderPass = fsi_render_pass_;
+    // Framebuffers created for one render pass may be used with all others
+    // here as they're all compatible (no attachments in any of them).
+    fsi_framebuffer_create_info.renderPass =
+        fsi_render_passes_[size_t(xenos::MsaaSamples::k1X)];
     fsi_framebuffer_create_info.attachmentCount = 0;
     fsi_framebuffer_create_info.pAttachments = nullptr;
     fsi_framebuffer_create_info.width = std::min(
@@ -901,8 +908,10 @@ void VulkanRenderTargetCache::Shutdown(bool from_destructor) {
 
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyFramebuffer, device,
                                          fsi_framebuffer_.framebuffer);
-  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device,
-                                         fsi_render_pass_);
+  for (size_t i = 0; i < xe::countof(fsi_render_passes_); ++i) {
+    ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyRenderPass, device,
+                                           fsi_render_passes_[i]);
+  }
 
   for (const auto& dump_pipeline_pair : dump_pipelines_) {
     // May be null to prevent recreation attempts.
@@ -1405,7 +1414,8 @@ bool VulkanRenderTargetCache::Update(
       MarkEdramBufferModified(
           EdramBufferModificationStatus::kViaFragmentShaderInterlock);
       last_update_render_pass_key_ = render_pass_key;
-      last_update_render_pass_ = fsi_render_pass_;
+      last_update_render_pass_ =
+          GetFragmentShaderInterlockRenderPass(render_pass_key.msaa_samples);
       last_update_framebuffer_ = &fsi_framebuffer_;
     } break;
 

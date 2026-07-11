@@ -170,9 +170,21 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   // A render pass managed by the render target cache may be ended and resumed
   // at any time (to allow for things like copying and texture loading).
   VkRenderPass GetHostRenderTargetsRenderPass(RenderPassKey key);
-  VkRenderPass GetFragmentShaderInterlockRenderPass() const {
+  // While a render pass with no attachments doesn't include a sample count
+  // itself, separate render pass objects are used for different guest sample
+  // counts so pipelines with different rasterization sample counts never
+  // share one render pass object - required by Vulkan when the
+  // variableMultisampleRate feature is not supported, and, in particular,
+  // load-bearing on MoltenVK, which takes the Metal raster sample count of an
+  // attachment-less render pass from the pipelines created against it (a
+  // single object would make the sample count of all fragment shader
+  // interlock render passes effectively the rasterization sample count of the
+  // most recently created guest pipeline).
+  VkRenderPass GetFragmentShaderInterlockRenderPass(
+      xenos::MsaaSamples msaa_samples) const {
     assert_true(GetPath() == Path::kPixelShaderInterlock);
-    return fsi_render_pass_;
+    assert_true(size_t(msaa_samples) < xe::countof(fsi_render_passes_));
+    return fsi_render_passes_[size_t(msaa_samples)];
   }
 
   VkFormat GetDepthVulkanFormat(xenos::DepthRenderTargetFormat format) const;
@@ -918,7 +930,9 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
 
   // For pixel (fragment) shader interlock.
 
-  VkRenderPass fsi_render_pass_ = VK_NULL_HANDLE;
+  // Indexed by uint32_t(xenos::MsaaSamples), see
+  // GetFragmentShaderInterlockRenderPass for why these are per-sample-count.
+  VkRenderPass fsi_render_passes_[3] = {};
   Framebuffer fsi_framebuffer_;
 
   VkPipelineLayout resolve_fsi_clear_pipeline_layout_ = VK_NULL_HANDLE;

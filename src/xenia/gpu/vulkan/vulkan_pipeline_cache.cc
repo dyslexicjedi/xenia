@@ -335,7 +335,8 @@ bool VulkanPipelineCache::ConfigurePipeline(
   VkRenderPass render_pass =
       render_target_cache_.GetPath() ==
               RenderTargetCache::Path::kPixelShaderInterlock
-          ? render_target_cache_.GetFragmentShaderInterlockRenderPass()
+          ? render_target_cache_.GetFragmentShaderInterlockRenderPass(
+                render_pass_key.msaa_samples)
           : render_target_cache_.GetHostRenderTargetsRenderPass(
                 render_pass_key);
   if (render_pass == VK_NULL_HANDLE) {

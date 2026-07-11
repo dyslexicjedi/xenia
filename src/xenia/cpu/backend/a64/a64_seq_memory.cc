@@ -360,19 +360,22 @@ struct STORE_F64 : Sequence<STORE_F64, I<OPCODE_STORE, VoidOp, I64Op, F64Op>> {
 struct STORE_V128
     : Sequence<STORE_V128, I<OPCODE_STORE, VoidOp, I64Op, V128Op>> {
   static void Emit(A64Emitter& e, const EmitArgType& i) {
+    if (i.src2.is_constant) {
+      // Load the constant before computing the address: LoadConstantV
+      // materializes through x0/x1, which the address operand lives in.
+      assert_true(!(i.instr->flags & LoadStoreFlags::LOAD_STORE_BYTE_SWAP));
+      e.LoadConstantV(QReg(0), i.src2.constant());
+      auto addr = ComputeMemoryAddress(e, i.src1);
+      e.str(QReg(0), addr);
+      return;
+    }
     auto addr = ComputeMemoryAddress(e, i.src1);
     if (i.instr->flags & LoadStoreFlags::LOAD_STORE_BYTE_SWAP) {
-      assert_true(!i.src2.is_constant);
       const VReg16B src_b(i.src2.reg().getIdx());
       e.rev32(VReg16B(0), src_b);
       e.str(QReg(0), addr);
     } else {
-      if (i.src2.is_constant) {
-        e.LoadConstantV(QReg(0), i.src2.constant());
-        e.str(QReg(0), addr);
-      } else {
-        e.str(i.src2.reg(), addr);
-      }
+      e.str(i.src2.reg(), addr);
     }
   }
 };

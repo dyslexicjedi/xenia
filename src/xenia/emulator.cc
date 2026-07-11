@@ -27,9 +27,12 @@
 #include "xenia/base/memory.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
+#include "xenia/base/string_buffer.h"
 #include "xenia/cpu/backend/code_cache.h"
 #include "xenia/cpu/backend/null_backend.h"
 #include "xenia/cpu/cpu_flags.h"
+#include "xenia/cpu/function.h"
+#include "xenia/cpu/ppc/ppc_opcode_info.h"
 #include "xenia/cpu/thread_state.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/hid/input_driver.h"
@@ -619,6 +622,62 @@ bool Emulator::ExceptionCallback(Exception* ex) {
     XELOGE(" v{:<3} = [0x{:08X}, 0x{:08X}, 0x{:08X}, 0x{:08X}]", i,
            context->v[i].u32[0], context->v[i].u32[1], context->v[i].u32[2],
            context->v[i].u32[3]);
+  }
+
+  // Host instruction words around the faulting PC - the code cache mapping is
+  // fully readable, so this is safe even if the PC landed in padding.
+  {
+    StringBuffer str;
+    uint64_t dump_start = std::max<uint64_t>(ex->pc() - 48, code_base);
+    uint64_t dump_end = std::min<uint64_t>(ex->pc() + 48, code_end);
+    for (uint64_t addr = dump_start; addr < dump_end; addr += 4) {
+      str.AppendFormat("{}{:016X}: {:08X}\n", addr == ex->pc() ? "* " : "  ",
+                       addr, *reinterpret_cast<const uint32_t*>(addr));
+    }
+    XELOGE("Host code around PC:\n{}", str.to_string_view());
+  }
+
+  // Locate the host PC relative to the functions the guest state points at,
+  // bypassing the code cache map (whose lookup can miss), and dump the guest
+  // PPC of the likely callers/callee for offline analysis.
+  {
+    uint32_t interesting_addresses[] = {uint32_t(context->ctr),
+                                        uint32_t(context->lr)};
+    for (uint32_t guest_address : interesting_addresses) {
+      if (guest_address < 0x80000000 || guest_address >= 0xA0000000) {
+        continue;
+      }
+      auto functions = processor()->FindFunctionsWithAddress(guest_address);
+      if (functions.empty()) {
+        XELOGE("Guest fn containing {:08X}: (not compiled)", guest_address);
+        continue;
+      }
+      auto function = static_cast<cpu::GuestFunction*>(functions[0]);
+      uint64_t mc = reinterpret_cast<uint64_t>(function->machine_code());
+      uint64_t mc_end = mc + function->machine_code_length();
+      XELOGE("Guest fn containing {:08X}: starts {:08X}, host code "
+             "{:016X}-{:016X}{}",
+             guest_address, function->address(), mc, mc_end,
+             (ex->pc() >= mc && ex->pc() < mc_end)
+                 ? " <== FAULT PC IS INSIDE THIS FUNCTION"
+                 : "");
+      uint32_t disasm_start = function->address();
+      uint32_t disasm_end = function->has_end_address()
+                                ? function->end_address() + 4
+                                : disasm_start + 0x100;
+      disasm_end = std::min(disasm_end, disasm_start + 0x800);
+      StringBuffer str;
+      for (uint32_t addr = disasm_start; addr < disasm_end; addr += 4) {
+        uint32_t code =
+            xe::load_and_swap<uint32_t>(memory()->TranslateVirtual(addr));
+        str.AppendFormat("{}{:08X} {:08X}   ",
+                         addr == guest_address ? "* " : "  ", addr, code);
+        cpu::ppc::DisasmPPC(addr, code, &str);
+        str.Append('\n');
+      }
+      XELOGE("PPC disassembly of fn at {:08X}:\n{}", disasm_start,
+             str.to_string_view());
+    }
   }
 
   // Scan the guest stack for words that fall inside already-compiled guest

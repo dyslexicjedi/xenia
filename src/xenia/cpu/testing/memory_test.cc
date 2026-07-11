@@ -48,6 +48,33 @@ TEST_CASE("ATOMIC_EXCHANGE_AND_COMPARE_EXCHANGE", "[instr][memory]") {
       });
 }
 
+TEST_CASE("STORE_V128_CONSTANT", "[instr][memory]") {
+  // Regression test: storing a non-zero, non-all-ones v128 constant used to
+  // clobber the computed guest address (LoadConstantV materializes the
+  // constant through x0/x1, which ComputeMemoryAddress's result lives in),
+  // storing through the constant's low half as the address.
+  const vec128_t value = vec128i(0x7F7FFFFFu, 0x7F7FFFFFu, 0x11223344u,
+                                 0x55667788u);
+  TestFunction test([&](HIRBuilder& b) {
+    auto address = LoadGPR(b, 4);
+    b.Store(address, b.LoadConstantVec128(value));
+    b.Return();
+  });
+
+  const uint32_t guest_address =
+      test.memory->SystemHeapAlloc(sizeof(vec128_t));
+  REQUIRE(guest_address != 0);
+  auto* guest_value = reinterpret_cast<vec128_t*>(
+      test.memory->TranslateVirtual(guest_address));
+  std::memset(guest_value, 0xCC, sizeof(vec128_t));
+  test.Run(
+      [guest_address](PPCContext* ctx) { ctx->r[4] = guest_address; },
+      [&value, guest_value](PPCContext* ctx) {
+        REQUIRE(guest_value->low == value.low);
+        REQUIRE(guest_value->high == value.high);
+      });
+}
+
 TEST_CASE("CACHE_CONTROL", "[instr][memory]") {
   TestFunction test([](HIRBuilder& b) {
     auto address = b.LoadConstantInt64(0x10000);

@@ -932,7 +932,12 @@ bool BaseHeap::AllocRange(uint32_t low_address, uint32_t high_address,
       std::min(uint32_t(page_table_.size()) - 1, high_page_number);
 
   if (page_count > (high_page_number - low_page_number)) {
-    XELOGE("BaseHeap::Alloc page count too big for requested range");
+    XELOGE(
+        "BaseHeap::Alloc page count too big for requested range: size={:08X} "
+        "alignment={:08X} range=[{:08X}-{:08X}] heap=[{:08X} +{:08X}] "
+        "page_size={:X}",
+        size, alignment, low_address, high_address, heap_base_, heap_size_,
+        page_size_);
     return false;
   }
 

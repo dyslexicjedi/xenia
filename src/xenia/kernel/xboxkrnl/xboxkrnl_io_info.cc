@@ -38,6 +38,8 @@ uint32_t GetQueryFileInfoMinimumLength(uint32_t info_class) {
       return sizeof(X_FILE_XCTD_COMPRESSION_INFORMATION);
     case XFileNetworkOpenInformation:
       return sizeof(X_FILE_NETWORK_OPEN_INFORMATION);
+    case XFileStandardInformation:
+      return sizeof(X_FILE_STANDARD_INFORMATION);
     // TODO(gibbed): structures to get the size of.
     case XFileModeInformation:
     case XFileAlignmentInformation:
@@ -59,6 +61,8 @@ dword_result_t NtQueryInformationFile_entry(
     lpvoid_t info_ptr, dword_t info_length, dword_t info_class) {
   uint32_t minimum_length = GetQueryFileInfoMinimumLength(info_class);
   if (!minimum_length) {
+    XELOGE("NtQueryInformationFile: unsupported info class {}",
+           uint32_t(info_class));
     return X_STATUS_INVALID_INFO_CLASS;
   }
 
@@ -88,6 +92,20 @@ dword_result_t NtQueryInformationFile_entry(
     case XFilePositionInformation: {
       auto info = info_ptr.as<X_FILE_POSITION_INFORMATION*>();
       info->current_byte_offset = file->position();
+      out_length = sizeof(*info);
+      break;
+    }
+    case XFileStandardInformation: {
+      // GetFileSize et al. query this; make sure sizes are current.
+      file->entry()->update();
+
+      auto info = info_ptr.as<X_FILE_STANDARD_INFORMATION*>();
+      info->allocation_size = file->entry()->allocation_size();
+      info->end_of_file = file->entry()->size();
+      info->number_of_links = 1;
+      info->delete_pending = 0;
+      info->directory =
+          (file->entry()->attributes() & vfs::kFileAttributeDirectory) ? 1 : 0;
       out_length = sizeof(*info);
       break;
     }

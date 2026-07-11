@@ -82,6 +82,17 @@ struct X_FILE_END_OF_FILE_INFORMATION {
 };
 static_assert_size(X_FILE_END_OF_FILE_INFORMATION, 8);
 
+// https://docs.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/ns-ntddk-_file_standard_information
+struct X_FILE_STANDARD_INFORMATION {
+  be<uint64_t> allocation_size;
+  be<uint64_t> end_of_file;
+  be<uint32_t> number_of_links;
+  uint8_t delete_pending;
+  uint8_t directory;
+  uint8_t pad[2];
+};
+static_assert_size(X_FILE_STANDARD_INFORMATION, 24);
+
 struct X_FILE_XCTD_COMPRESSION_INFORMATION {
   be<uint32_t> unknown;
 };

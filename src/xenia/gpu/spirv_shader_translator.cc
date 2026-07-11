@@ -2212,8 +2212,13 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
 
   // Sample mask input.
   if (edram_fragment_shader_interlock_) {
-    // SampleMask depends on SampleRateShading in some SPIR-V revisions.
-    builder_->addCapability(spv::CapabilitySampleRateShading);
+    // Note: not declaring the SampleRateShading capability (which some SPIR-V
+    // revisions require for the SampleMask built-in) - SPIRV-Cross's
+    // is_sample_rate() treats any fragment shader declaring it as running per
+    // sample, which on Metal forces per-sample execution with a sample_id
+    // input, per-sample-shifted FragCoord, and the sample mask limited to the
+    // current sample only - breaking the per-pixel sample loop this shader
+    // performs (incorrect rendering with 2x/4x MSAA on MoltenVK).
     input_sample_mask_ = builder_->createVariable(
         spv::NoPrecision, spv::StorageClassInput,
         builder_->makeArrayType(type_int_, builder_->makeUintConstant(1), 0),

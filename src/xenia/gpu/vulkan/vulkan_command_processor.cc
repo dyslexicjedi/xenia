@@ -35,6 +35,14 @@
 #include "xenia/ui/vulkan/vulkan_presenter.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
 
+DEFINE_int32(
+    log_slow_frames_ms, 0,
+    "Debug: log per-frame GPU workload statistics (draws, resolves, render "
+    "pass begins, EDRAM barriers, pipeline creations, texture loads, shared "
+    "memory uploads) for guest frames whose wall time exceeds this number of "
+    "milliseconds. 0 disables the logging.",
+    "GPU");
+
 namespace xe {
 namespace gpu {
 namespace vulkan {
@@ -1568,6 +1576,32 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   // End the frame even if did not present for any reason (the image refresher
   // was not called), to prevent leaking per-frame resources.
   EndSubmission(true);
+
+  if (cvars::log_slow_frames_ms > 0) {
+    std::chrono::steady_clock::time_point swap_end_time =
+        std::chrono::steady_clock::now();
+    if (last_swap_end_time_ != std::chrono::steady_clock::time_point()) {
+      int64_t frame_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             swap_end_time - last_swap_end_time_)
+                             .count();
+      if (frame_ms >= cvars::log_slow_frames_ms) {
+        XELOGI(
+            "Slow frame {}: {} ms: {} draws, {} resolves, {} render pass "
+            "begins, {} EDRAM barriers, {} pipelines created ({} us), {} "
+            "textures loaded ({} KB guest data), {} KB shared memory uploaded",
+            frame_current_, frame_ms, frame_stats_.draws,
+            frame_stats_.resolves, frame_stats_.render_pass_begins,
+            frame_stats_.edram_barriers,
+            frame_stats_.pipelines_created.load(std::memory_order_relaxed),
+            frame_stats_.pipeline_creation_us.load(std::memory_order_relaxed),
+            frame_stats_.textures_loaded,
+            frame_stats_.texture_guest_bytes >> 10,
+            frame_stats_.shared_memory_upload_bytes >> 10);
+      }
+    }
+    last_swap_end_time_ = swap_end_time;
+  }
+  frame_stats_.Reset();
 }
 
 bool VulkanCommandProcessor::PushBufferMemoryBarrier(
@@ -1779,6 +1813,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
   render_pass_begin_info.pClearValues = nullptr;
   deferred_command_buffer_.CmdVkBeginRenderPass(&render_pass_begin_info,
                                                 VK_SUBPASS_CONTENTS_INLINE);
+  ++frame_stats_.render_pass_begins;
 }
 
 void VulkanCommandProcessor::EndRenderPass() {
@@ -2076,7 +2111,7 @@ void VulkanCommandProcessor::BindExternalGraphicsPipeline(
   deferred_command_buffer_.CmdVkBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS,
                                              pipeline);
   current_external_graphics_pipeline_ = pipeline;
-  current_guest_graphics_pipeline_ = VK_NULL_HANDLE;
+  current_guest_graphics_pipeline_ = nullptr;
   current_guest_graphics_pipeline_layout_ = VK_NULL_HANDLE;
 }
 
@@ -2149,6 +2184,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     // Special copy handling.
     return IssueCopy();
   }
+
+  ++frame_stats_.draws;
 
   const ui::vulkan::VulkanDevice::Properties& device_properties =
       GetVulkanDevice()->properties();
@@ -2355,15 +2392,17 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
 
   // Create the pipeline (for this, need the render pass from the render target
   // cache), translating the shaders - doing this now to obtain the used
-  // textures.
-  VkPipeline pipeline;
+  // textures. The pipeline may be created asynchronously, so its handle is
+  // returned as a location that will hold it when the deferred command buffer
+  // is executed, after the creation has been awaited in EndSubmission.
+  const VkPipeline* pipeline_location;
   const VulkanPipelineCache::PipelineLayoutProvider* pipeline_layout_provider;
   if (!pipeline_cache_->ConfigurePipeline(
           vertex_shader_translation, pixel_shader_translation,
           primitive_processing_result, normalized_depth_control,
           normalized_color_mask,
-          render_target_cache_->last_update_render_pass_key(), pipeline,
-          pipeline_layout_provider)) {
+          render_target_cache_->last_update_render_pass_key(),
+          pipeline_location, pipeline_layout_provider)) {
     return false;
   }
 
@@ -2380,10 +2419,10 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // Update the graphics pipeline, and if the new graphics pipeline has a
   // different layout, invalidate incompatible descriptor sets before updating
   // current_guest_graphics_pipeline_layout_.
-  if (current_guest_graphics_pipeline_ != pipeline) {
-    deferred_command_buffer_.CmdVkBindPipeline(VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                               pipeline);
-    current_guest_graphics_pipeline_ = pipeline;
+  if (current_guest_graphics_pipeline_ != pipeline_location) {
+    deferred_command_buffer_.CmdVkBindPipelineFromLocation(
+        VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_location);
+    current_guest_graphics_pipeline_ = pipeline_location;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
   }
   auto pipeline_layout =
@@ -2613,6 +2652,8 @@ bool VulkanCommandProcessor::IssueCopy() {
     return false;
   }
 
+  ++frame_stats_.resolves;
+
   uint32_t written_address, written_length;
   if (!render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
                                      written_address, written_length)) {
@@ -2805,7 +2846,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     dynamic_stencil_reference_back_update_needed_ = true;
     current_render_pass_ = VK_NULL_HANDLE;
     current_framebuffer_ = nullptr;
-    current_guest_graphics_pipeline_ = VK_NULL_HANDLE;
+    current_guest_graphics_pipeline_ = nullptr;
     current_external_graphics_pipeline_ = VK_NULL_HANDLE;
     current_external_compute_pipeline_ = VK_NULL_HANDLE;
     current_guest_graphics_pipeline_layout_ = nullptr;
@@ -3013,6 +3054,10 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
     }
 
     SubmitBarriers(true);
+
+    // The deferred command buffer reads the VkPipeline handles of pipelines
+    // created asynchronously - await all queued creations.
+    pipeline_cache_->EndSubmission();
 
     assert_false(command_buffers_writable_.empty());
     CommandBuffer command_buffer = command_buffers_writable_.back();

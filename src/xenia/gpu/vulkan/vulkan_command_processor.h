@@ -11,6 +11,8 @@
 #define XENIA_GPU_VULKAN_VULKAN_COMMAND_PROCESSOR_H_
 
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <climits>
 #include <cstdint>
 #include <deque>
@@ -176,6 +178,34 @@ class VulkanCommandProcessor : public CommandProcessor {
 
   uint64_t GetCurrentFrame() const { return frame_current_; }
   uint64_t GetCompletedFrame() const { return frame_completed_; }
+
+  // Per-frame workload counters for diagnosing slow frames, reset at each
+  // swap. Reported by IssueSwap for frames slower than the log_slow_frames_ms
+  // cvar threshold. The pipeline creation counters are atomic because they are
+  // incremented from the pipeline creation threads.
+  struct FrameStats {
+    uint32_t draws = 0;
+    uint32_t resolves = 0;
+    uint32_t render_pass_begins = 0;
+    uint32_t edram_barriers = 0;
+    std::atomic<uint32_t> pipelines_created{0};
+    std::atomic<uint64_t> pipeline_creation_us{0};
+    uint32_t textures_loaded = 0;
+    uint64_t texture_guest_bytes = 0;
+    uint64_t shared_memory_upload_bytes = 0;
+    void Reset() {
+      draws = 0;
+      resolves = 0;
+      render_pass_begins = 0;
+      edram_barriers = 0;
+      pipelines_created.store(0, std::memory_order_relaxed);
+      pipeline_creation_us.store(0, std::memory_order_relaxed);
+      textures_loaded = 0;
+      texture_guest_bytes = 0;
+      shared_memory_upload_bytes = 0;
+    }
+  };
+  FrameStats& frame_stats() { return frame_stats_; }
 
   // Submission must be open to insert barriers. If no pipeline stages access
   // the resource in a synchronization scope, the stage masks should be 0 (top /
@@ -485,6 +515,11 @@ class VulkanCommandProcessor : public CommandProcessor {
   // Submission indices of frames that have already been submitted.
   uint64_t closed_frame_submissions_[kMaxFramesInFlight] = {};
 
+  // Per-frame workload counters, reset at each IssueSwap.
+  FrameStats frame_stats_;
+  // Wall time of the previous IssueSwap completion for slow-frame logging.
+  std::chrono::steady_clock::time_point last_swap_end_time_;
+
   // <Submission where last used, resource>, sorted by the submission number.
   std::deque<std::pair<uint64_t, VkDeviceMemory>> destroy_memory_;
   std::deque<std::pair<uint64_t, VkBuffer>> destroy_buffers_;
@@ -687,11 +722,11 @@ class VulkanCommandProcessor : public CommandProcessor {
   const VulkanRenderTargetCache::Framebuffer* current_framebuffer_;
 
   // Currently bound graphics pipeline, either from the pipeline cache (with
-  // potentially deferred creation - current_external_graphics_pipeline_ is
-  // VK_NULL_HANDLE in this case) or a non-Xenos one
-  // (current_guest_graphics_pipeline_ is VK_NULL_HANDLE in this case).
-  // TODO(Triang3l): Change to a deferred compilation handle.
-  VkPipeline current_guest_graphics_pipeline_;
+  // potentially deferred creation - the handle is the location that will hold
+  // the VkPipeline after the creation is awaited in EndSubmission;
+  // current_external_graphics_pipeline_ is VK_NULL_HANDLE in this case) or a
+  // non-Xenos one (current_guest_graphics_pipeline_ is nullptr in this case).
+  const VkPipeline* current_guest_graphics_pipeline_;
   VkPipeline current_external_graphics_pipeline_;
   VkPipeline current_external_compute_pipeline_;
 

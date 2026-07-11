@@ -10,15 +10,20 @@
 #ifndef XENIA_GPU_VULKAN_VULKAN_PIPELINE_STATE_CACHE_H_
 #define XENIA_GPU_VULKAN_VULKAN_PIPELINE_STATE_CACHE_H_
 
+#include <condition_variable>
 #include <cstddef>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include "xenia/base/hash.h"
 #include "xenia/base/platform.h"
+#include "xenia/base/threading.h"
 #include "xenia/base/xxhash.h"
 #include "xenia/gpu/primitive_processor.h"
 #include "xenia/gpu/register_file.h"
@@ -78,7 +83,10 @@ class VulkanPipelineCache {
 
   bool EnsureShadersTranslated(VulkanShader::VulkanTranslation* vertex_shader,
                                VulkanShader::VulkanTranslation* pixel_shader);
-  // TODO(Triang3l): Return a deferred creation handle.
+  // The pipeline is returned as a pointer to the location that will hold the
+  // VkPipeline handle - creation may happen asynchronously on the creation
+  // threads, so the handle must only be read when replaying the deferred
+  // command buffer, after EndSubmission has awaited creation completion.
   bool ConfigurePipeline(
       VulkanShader::VulkanTranslation* vertex_shader,
       VulkanShader::VulkanTranslation* pixel_shader,
@@ -86,8 +94,12 @@ class VulkanPipelineCache {
       reg::RB_DEPTHCONTROL normalized_depth_control,
       uint32_t normalized_color_mask,
       VulkanRenderTargetCache::RenderPassKey render_pass_key,
-      VkPipeline& pipeline_out,
+      const VkPipeline*& pipeline_out,
       const PipelineLayoutProvider*& pipeline_layout_out);
+
+  // Awaits creation of all queued pipelines. Must be called before replaying
+  // the deferred command buffer, which reads the VkPipeline handles.
+  void EndSubmission();
 
  private:
   enum class PipelineGeometryShader : uint32_t {
@@ -278,6 +290,9 @@ class VulkanPipelineCache {
   bool EnsurePipelineCreated(
       const PipelineCreationArguments& creation_arguments);
 
+  void CreationThread(size_t thread_index);
+  void CreateQueuedPipelinesOnProcessorThread();
+
   VulkanCommandProcessor& command_processor_;
   const RegisterFile& register_file_;
   VulkanRenderTargetCache& render_target_cache_;
@@ -324,6 +339,32 @@ class VulkanPipelineCache {
   // Previously used pipeline, to avoid lookups if the state wasn't changed.
   const std::pair<const PipelineDescription, Pipeline>* last_pipeline_ =
       nullptr;
+
+  // Pipeline creation threads, for moving vkCreateGraphicsPipelines off the
+  // command processor thread - it's extremely expensive with MoltenVK, where
+  // it involves Metal shader compilation (hundreds of milliseconds per
+  // pipeline when the OS shader cache is cold, freezing the game for seconds
+  // when multiple new pipelines are needed in one frame). The deferred command
+  // buffer reads the VkPipeline handles at submission time, after
+  // EndSubmission has awaited creation completion.
+  std::mutex creation_request_lock_;
+  std::condition_variable creation_request_cond_;
+  std::deque<PipelineCreationArguments> creation_queue_;
+  // Number of threads that are currently creating a pipeline - incremented
+  // when a pipeline is dequeued (the completion event can't be set until the
+  // pipeline is created), decremented when the pipeline is created.
+  size_t creation_threads_busy_ = 0;
+  // Manual-reset event set when the last queued pipeline is created and there
+  // are no more pipelines to create. Must be set to reset (busy) before
+  // enqueueing.
+  std::unique_ptr<xe::threading::Event> creation_completion_event_;
+  // Whether setting the event on completion is requested, protected with
+  // creation_request_lock_.
+  bool creation_completion_set_event_ = false;
+  // Creation threads with this index or above need to be shut down as soon as
+  // possible, protected with creation_request_lock_.
+  size_t creation_threads_shutdown_from_ = SIZE_MAX;
+  std::vector<std::unique_ptr<xe::threading::Thread>> creation_threads_;
 };
 
 }  // namespace vulkan

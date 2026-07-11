@@ -109,6 +109,18 @@ class DeferredCommandBuffer {
     args.pipeline = pipeline;
   }
 
+  // For pipelines created asynchronously on the pipeline cache's creation
+  // threads - the handle is read from the location during Execute, when all
+  // queued creations have been awaited.
+  void CmdVkBindPipelineFromLocation(VkPipelineBindPoint pipeline_bind_point,
+                                     const VkPipeline* pipeline_location) {
+    auto& args = *reinterpret_cast<ArgsVkBindPipelineFromLocation*>(
+        WriteCommand(Command::kVkBindPipelineFromLocation,
+                     sizeof(ArgsVkBindPipelineFromLocation)));
+    args.pipeline_bind_point = pipeline_bind_point;
+    args.pipeline_location = pipeline_location;
+  }
+
   void CmdVkBindVertexBuffers(uint32_t first_binding, uint32_t binding_count,
                               const VkBuffer* buffers,
                               const VkDeviceSize* offsets) {
@@ -364,6 +376,7 @@ class DeferredCommandBuffer {
     kVkBindDescriptorSets,
     kVkBindIndexBuffer,
     kVkBindPipeline,
+    kVkBindPipelineFromLocation,
     kVkBindVertexBuffers,
     kVkClearAttachments,
     kVkClearColorImage,
@@ -420,6 +433,11 @@ class DeferredCommandBuffer {
   struct ArgsVkBindPipeline {
     VkPipelineBindPoint pipeline_bind_point;
     VkPipeline pipeline;
+  };
+
+  struct ArgsVkBindPipelineFromLocation {
+    VkPipelineBindPoint pipeline_bind_point;
+    const VkPipeline* pipeline_location;
   };
 
   struct ArgsVkBindVertexBuffers {

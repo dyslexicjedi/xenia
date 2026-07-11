@@ -1527,6 +1527,13 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
     copy_region.imageExtent.depth = std::max(depth >> level, UINT32_C(1));
   }
 
+  VulkanCommandProcessor::FrameStats& frame_stats =
+      command_processor_.frame_stats();
+  ++frame_stats.textures_loaded;
+  frame_stats.texture_guest_bytes +=
+      (load_base ? vulkan_texture.GetGuestBaseSize() : 0) +
+      (load_mips ? vulkan_texture.GetGuestMipsSize() : 0);
+
   return true;
 }
 

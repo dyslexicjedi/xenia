@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -33,6 +34,16 @@
 #include "xenia/gpu/vulkan/vulkan_shader.h"
 #include "xenia/gpu/xenos.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
+
+DEFINE_int32(
+    vulkan_pipeline_creation_threads, -1,
+    "Number of threads used for graphics pipeline creation, which, especially "
+    "with MoltenVK (where it involves Metal shader compilation), is very "
+    "expensive and would otherwise stall the GPU command processor thread. -1 "
+    "to use an implementation-defined default value, 0 to disable creation "
+    "threads and create pipelines synchronously on the command processor "
+    "thread.",
+    "Vulkan");
 
 namespace xe {
 namespace gpu {
@@ -81,10 +92,58 @@ bool VulkanPipelineCache::Initialize() {
     }
   }
 
+  uint32_t logical_processor_count = xe::threading::logical_processor_count();
+  if (!logical_processor_count) {
+    // Pick some reasonable amount if couldn't determine the number of cores.
+    logical_processor_count = 6;
+  }
+  // Initialize creation thread synchronization data even if not using creation
+  // threads because they may still be used through the completion event.
+  creation_threads_busy_ = 0;
+  creation_completion_event_ =
+      xe::threading::Event::CreateManualResetEvent(true);
+  assert_not_null(creation_completion_event_);
+  creation_completion_set_event_ = false;
+  creation_threads_shutdown_from_ = SIZE_MAX;
+  if (cvars::vulkan_pipeline_creation_threads != 0) {
+    size_t creation_thread_count;
+    if (cvars::vulkan_pipeline_creation_threads < 0) {
+      creation_thread_count =
+          std::max(logical_processor_count * 3 / 4, uint32_t(1));
+    } else {
+      creation_thread_count =
+          std::min(uint32_t(cvars::vulkan_pipeline_creation_threads),
+                   logical_processor_count);
+    }
+    for (size_t i = 0; i < creation_thread_count; ++i) {
+      std::unique_ptr<xe::threading::Thread> creation_thread =
+          xe::threading::Thread::Create({}, [this, i]() { CreationThread(i); });
+      assert_not_null(creation_thread);
+      creation_thread->set_name("Vulkan Pipelines");
+      creation_threads_.push_back(std::move(creation_thread));
+    }
+  }
+
   return true;
 }
 
 void VulkanPipelineCache::Shutdown() {
+  // Shut down all threads, before destroying the pipelines since they may be
+  // creating them.
+  if (!creation_threads_.empty()) {
+    {
+      std::lock_guard<std::mutex> lock(creation_request_lock_);
+      creation_threads_shutdown_from_ = 0;
+    }
+    creation_request_cond_.notify_all();
+    for (size_t i = 0; i < creation_threads_.size(); ++i) {
+      xe::threading::Wait(creation_threads_[i].get(), false);
+    }
+    creation_threads_.clear();
+  }
+  creation_queue_.clear();
+  creation_completion_event_.reset();
+
   const ui::vulkan::VulkanDevice* const vulkan_device =
       command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
@@ -266,7 +325,7 @@ bool VulkanPipelineCache::ConfigurePipeline(
     reg::RB_DEPTHCONTROL normalized_depth_control,
     uint32_t normalized_color_mask,
     VulkanRenderTargetCache::RenderPassKey render_pass_key,
-    VkPipeline& pipeline_out,
+    const VkPipeline*& pipeline_out,
     const PipelineLayoutProvider*& pipeline_layout_out) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
@@ -285,14 +344,14 @@ bool VulkanPipelineCache::ConfigurePipeline(
     return false;
   }
   if (last_pipeline_ && last_pipeline_->first == description) {
-    pipeline_out = last_pipeline_->second.pipeline;
+    pipeline_out = &last_pipeline_->second.pipeline;
     pipeline_layout_out = last_pipeline_->second.pipeline_layout;
     return true;
   }
   auto it = pipelines_.find(description);
   if (it != pipelines_.end()) {
     last_pipeline_ = &*it;
-    pipeline_out = it->second.pipeline;
+    pipeline_out = &it->second.pipeline;
     pipeline_layout_out = it->second.pipeline_layout;
     return true;
   }
@@ -350,12 +409,109 @@ bool VulkanPipelineCache::ConfigurePipeline(
   creation_arguments.pixel_shader = pixel_shader;
   creation_arguments.geometry_shader = geometry_shader;
   creation_arguments.render_pass = render_pass;
-  if (!EnsurePipelineCreated(creation_arguments)) {
-    return false;
+  if (!creation_threads_.empty()) {
+    // Submit the pipeline for creation to any available thread. The handle in
+    // the map entry will be written by the creation thread; it's only read
+    // when the deferred command buffer is replayed, after EndSubmission has
+    // awaited the completion of all queued creations.
+    {
+      std::lock_guard<std::mutex> lock(creation_request_lock_);
+      creation_queue_.push_back(creation_arguments);
+    }
+    creation_request_cond_.notify_one();
+  } else {
+    if (!EnsurePipelineCreated(creation_arguments)) {
+      return false;
+    }
   }
-  pipeline_out = pipeline.second.pipeline;
+  pipeline_out = &pipeline.second.pipeline;
   pipeline_layout_out = pipeline_layout;
   return true;
+}
+
+void VulkanPipelineCache::EndSubmission() {
+  if (creation_threads_.empty()) {
+    return;
+  }
+  // Await creation of all queued pipelines - the deferred command buffer reads
+  // the VkPipeline handles when it's replayed.
+  CreateQueuedPipelinesOnProcessorThread();
+  bool await_creation_completion_event;
+  {
+    std::lock_guard<std::mutex> lock(creation_request_lock_);
+    // The queue is already empty (because the processor thread also worked on
+    // creating the leftover pipelines), so only check if there are threads
+    // with pipelines currently being created.
+    await_creation_completion_event = creation_threads_busy_ != 0;
+    if (await_creation_completion_event) {
+      creation_completion_event_->Reset();
+      creation_completion_set_event_ = true;
+    }
+  }
+  if (await_creation_completion_event) {
+    creation_request_cond_.notify_one();
+    xe::threading::Wait(creation_completion_event_.get(), false);
+  }
+}
+
+void VulkanPipelineCache::CreationThread(size_t thread_index) {
+  while (true) {
+    PipelineCreationArguments creation_arguments;
+    creation_arguments.pipeline = nullptr;
+
+    // Check if need to shut down or set the completion event and dequeue the
+    // pipeline if there is any.
+    {
+      std::unique_lock<std::mutex> lock(creation_request_lock_);
+      if (thread_index >= creation_threads_shutdown_from_ ||
+          creation_queue_.empty()) {
+        if (creation_completion_set_event_ && creation_threads_busy_ == 0) {
+          // Last pipeline in the queue created - signal the event if
+          // requested.
+          creation_completion_set_event_ = false;
+          creation_completion_event_->Set();
+        }
+        if (thread_index >= creation_threads_shutdown_from_) {
+          return;
+        }
+        creation_request_cond_.wait(lock);
+        continue;
+      }
+      // Take the pipeline from the queue and increment the busy thread count
+      // until the pipeline is created - other threads must be able to dequeue
+      // requests, but can't set the completion event until the pipelines are
+      // fully created (rather than just started creating).
+      creation_arguments = creation_queue_.front();
+      creation_queue_.pop_front();
+      ++creation_threads_busy_;
+    }
+
+    EnsurePipelineCreated(creation_arguments);
+
+    // Pipeline created - the thread is not busy anymore, safe to set the
+    // completion event if needed (at the next iteration, or in some other
+    // thread).
+    {
+      std::lock_guard<std::mutex> lock(creation_request_lock_);
+      --creation_threads_busy_;
+    }
+  }
+}
+
+void VulkanPipelineCache::CreateQueuedPipelinesOnProcessorThread() {
+  assert_false(creation_threads_.empty());
+  while (true) {
+    PipelineCreationArguments creation_arguments;
+    {
+      std::lock_guard<std::mutex> lock(creation_request_lock_);
+      if (creation_queue_.empty()) {
+        break;
+      }
+      creation_arguments = creation_queue_.front();
+      creation_queue_.pop_front();
+    }
+    EnsurePipelineCreated(creation_arguments);
+  }
 }
 
 bool VulkanPipelineCache::TranslateAnalyzedShader(
@@ -2167,9 +2323,18 @@ bool VulkanPipelineCache::EnsurePipelineCreated(
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
   const VkDevice device = vulkan_device->device();
   VkPipeline pipeline;
-  if (dfn.vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1,
-                                    &pipeline_create_info, nullptr,
-                                    &pipeline) != VK_SUCCESS) {
+  std::chrono::steady_clock::time_point pipeline_creation_start =
+      std::chrono::steady_clock::now();
+  VkResult pipeline_create_result = dfn.vkCreateGraphicsPipelines(
+      device, VK_NULL_HANDLE, 1, &pipeline_create_info, nullptr, &pipeline);
+  VulkanCommandProcessor::FrameStats& frame_stats =
+      command_processor_.frame_stats();
+  ++frame_stats.pipelines_created;
+  frame_stats.pipeline_creation_us +=
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - pipeline_creation_start)
+          .count();
+  if (pipeline_create_result != VK_SUCCESS) {
     // TODO(Triang3l): Move these error messages outside.
     /* if (creation_arguments.pixel_shader) {
       XELOGE(

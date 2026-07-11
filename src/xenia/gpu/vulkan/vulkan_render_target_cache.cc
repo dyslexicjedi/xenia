@@ -2039,6 +2039,7 @@ void VulkanRenderTargetCache::CommitEdramBufferShaderWrites(
   command_processor_.PushBufferMemoryBarrier(
       edram_buffer_, 0, VK_WHOLE_SIZE, stage_mask, stage_mask, access_mask,
       access_mask, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, false);
+  ++command_processor_.frame_stats().edram_barriers;
   edram_buffer_modification_status_ =
       EdramBufferModificationStatus::kUnmodified;
   PixelShaderInterlockFullEdramBarrierPlaced();

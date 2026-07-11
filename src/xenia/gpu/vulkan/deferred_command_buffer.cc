@@ -104,6 +104,19 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
                               args.pipeline);
       } break;
 
+      case Command::kVkBindPipelineFromLocation: {
+        auto& args =
+            *reinterpret_cast<const ArgsVkBindPipelineFromLocation*>(stream);
+        VkPipeline pipeline = *args.pipeline_location;
+        // VK_NULL_HANDLE if the asynchronous creation has failed - skip the
+        // bind, keeping the previous pipeline, to avoid binding an invalid
+        // handle (the draws will be incorrect either way).
+        if (pipeline != VK_NULL_HANDLE) {
+          dfn.vkCmdBindPipeline(command_buffer, args.pipeline_bind_point,
+                                pipeline);
+        }
+      } break;
+
       case Command::kVkBindVertexBuffers: {
         auto& args = *reinterpret_cast<const ArgsVkBindVertexBuffers*>(stream);
         size_t offset_bytes =

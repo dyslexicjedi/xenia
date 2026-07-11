@@ -417,6 +417,12 @@ bool VulkanSharedMemory::UploadRanges(
   DeferredCommandBuffer& command_buffer =
       command_processor_.deferred_command_buffer();
   uint64_t submission_current = command_processor_.GetCurrentSubmission();
+  uint64_t& frame_stats_upload_bytes =
+      command_processor_.frame_stats().shared_memory_upload_bytes;
+  for (const auto& upload_range : upload_page_ranges) {
+    frame_stats_upload_bytes += uint64_t(upload_range.second)
+                                << page_size_log2();
+  }
   bool successful = true;
   upload_regions_.clear();
   VkBuffer upload_buffer_previous = VK_NULL_HANDLE;

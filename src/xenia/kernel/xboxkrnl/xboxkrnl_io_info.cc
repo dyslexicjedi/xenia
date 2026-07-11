@@ -300,6 +300,8 @@ dword_result_t NtQueryVolumeInformationFile_entry(
     lpvoid_t info_ptr, dword_t info_length, dword_t info_class) {
   uint32_t minimum_length = GetQueryVolumeInfoMinimumLength(info_class);
   if (!minimum_length) {
+    XELOGE("NtQueryVolumeInformationFile: unsupported info class {}",
+           uint32_t(info_class));
     return X_STATUS_INVALID_INFO_CLASS;
   }
 

@@ -138,7 +138,15 @@ class CommandProcessor {
   bool Save(ByteStream* stream);
   bool Restore(ByteStream* stream);
 
+  // Downloads the GPU-side contents of the shared memory to the CPU-visible
+  // guest memory, for debugging tools that inspect guest memory after
+  // playback. Returns false if unsupported by the backend or nothing was
+  // downloaded.
+  virtual bool DebugDownloadSharedMemoryToGuest() { return false; }
+
  protected:
+  virtual void InitializeTrace();
+
   struct IndexBufferInfo {
     xenos::IndexFormat format = xenos::IndexFormat::kInt16;
     xenos::Endian endianness = xenos::Endian::kNone;
@@ -243,8 +251,6 @@ class CommandProcessor {
   SwapPostEffect GetActualSwapPostEffect() const {
     return swap_post_effect_actual_;
   }
-
-  virtual void InitializeTrace();
 
   Memory* memory_ = nullptr;
   kernel::KernelState* kernel_state_ = nullptr;

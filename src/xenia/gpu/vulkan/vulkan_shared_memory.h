@@ -56,6 +56,10 @@ class VulkanSharedMemory : public SharedMemory {
   // Returns true if any downloads were submitted to the command processor.
   bool InitializeTraceSubmitDownloads();
   void InitializeTraceCompleteDownloads();
+  // Like InitializeTraceCompleteDownloads, but copies the downloaded GPU-side
+  // contents into the CPU-visible guest memory instead of the trace being
+  // written, for debugging tools inspecting guest memory.
+  void DebugCompleteDownloadsToGuestMemory();
 
  protected:
   bool AllocateSparseHostGpuMemoryRange(uint32_t offset_allocations,

@@ -327,6 +327,34 @@ void VulkanSharedMemory::InitializeTraceCompleteDownloads() {
   ResetTraceDownload();
 }
 
+void VulkanSharedMemory::DebugCompleteDownloadsToGuestMemory() {
+  if (!trace_download_buffer_memory_) {
+    return;
+  }
+  const ui::vulkan::VulkanDevice* const vulkan_device =
+      command_processor_.GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
+  void* download_mapping;
+  if (dfn.vkMapMemory(device, trace_download_buffer_memory_, 0, VK_WHOLE_SIZE,
+                      0, &download_mapping) == VK_SUCCESS) {
+    uint32_t download_buffer_offset = 0;
+    for (const auto& download_range : trace_download_ranges()) {
+      std::memcpy(memory().TranslatePhysical(download_range.first),
+                  reinterpret_cast<const uint8_t*>(download_mapping) +
+                      download_buffer_offset,
+                  download_range.second);
+      download_buffer_offset += download_range.second;
+    }
+    dfn.vkUnmapMemory(device, trace_download_buffer_memory_);
+  } else {
+    XELOGE(
+        "Shared memory: Failed to map the GPU-written memory download buffer "
+        "for the debug download");
+  }
+  ResetTraceDownload();
+}
+
 bool VulkanSharedMemory::AllocateSparseHostGpuMemoryRange(
     uint32_t offset_allocations, uint32_t length_allocations) {
   if (!length_allocations) {

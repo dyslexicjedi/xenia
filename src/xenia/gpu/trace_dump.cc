@@ -16,6 +16,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/string.h"
+#include "xenia/base/utf8.h"
 #include "xenia/base/threading.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/graphics_system.h"
@@ -34,6 +35,21 @@ DEFINE_path(target_trace_file, "", "Specifies the trace file to load.", "GPU");
 DEFINE_path(trace_dump_path, "", "Output path for dumped files.", "GPU");
 DEFINE_int32(trace_dump_frame, 0,
              "Index of the frame to dump, or -1 for the last frame.", "GPU");
+DEFINE_int32(trace_dump_frame_step, 0,
+             "If non-zero, also dump a PNG every this many frames while "
+             "replaying up to trace_dump_frame (named <output>_NNNNN.png).",
+             "GPU");
+DEFINE_int32(trace_dump_final_frame_draw_budget, -1,
+             "Debug: value to set the draw_budget cvar to right before "
+             "replaying the captured frame, to bisect which draw within that "
+             "frame introduces an artifact; -1 = unlimited.",
+             "GPU");
+DEFINE_string(trace_dump_memory_ranges, "",
+              "Debug: comma-separated hex physical ranges (start:length) to "
+              "write to <output>_<start>.bin after playback, e.g. "
+              "\"137A0000:500000,12D97000:398000\".",
+              "GPU");
+DECLARE_int32(draw_budget);
 
 namespace xe {
 namespace gpu {
@@ -144,6 +160,14 @@ int TraceDump::Run() {
           static_cast<int>(player_->current_frame()->commands.size() - 1));
     }
     player_->WaitOnPlayback();
+    if (cvars::trace_dump_frame_step &&
+        !(replay_frame % cvars::trace_dump_frame_step)) {
+      SaveCurrentFrame(replay_frame);
+    }
+  }
+
+  if (cvars::trace_dump_final_frame_draw_budget >= 0) {
+    cvars::draw_budget = cvars::trace_dump_final_frame_draw_budget;
   }
 
   BeginHostCapture();
@@ -157,28 +181,70 @@ int TraceDump::Run() {
   EndHostCapture();
 
   // Capture.
-  int result = 0;
-  ui::Presenter* presenter = graphics_system_->presenter();
-  ui::RawImage raw_image;
-  if (presenter && presenter->CaptureGuestOutput(raw_image)) {
-    // Save framebuffer png.
-    auto png_path = base_output_path_.replace_extension(".png");
-    auto handle = filesystem::OpenFile(png_path, "wb");
-    auto callback = [](void* context, void* data, int size) {
-      fwrite(data, 1, size, (FILE*)context);
-    };
-    stbi_write_png_to_func(callback, handle, static_cast<int>(raw_image.width),
-                           static_cast<int>(raw_image.height), 4,
-                           raw_image.data.data(),
-                           static_cast<int>(raw_image.stride));
-    fclose(handle);
-  } else {
-    result = 1;
+  int result = SaveCurrentFrame(-1) ? 0 : 1;
+
+  if (!cvars::trace_dump_memory_ranges.empty()) {
+    // Download the GPU-side contents of the shared memory (resolve
+    // destinations and other GPU writes never reach the CPU-visible guest
+    // memory otherwise).
+    if (!graphics_system_->command_processor()
+             ->DebugDownloadSharedMemoryToGuest()) {
+      XELOGW(
+          "trace_dump_memory_ranges: GPU shared memory download not "
+          "performed - dumps will contain CPU-side data only");
+    }
+    std::vector<std::string_view> ranges =
+        xe::utf8::split(cvars::trace_dump_memory_ranges, ",");
+    for (const std::string_view range_view : ranges) {
+      std::string range(range_view);
+      uint32_t start, length;
+      if (std::sscanf(range.c_str(), "%x:%x", &start, &length) != 2) {
+        XELOGE("trace_dump_memory_ranges: can't parse '{}'", range);
+        continue;
+      }
+      const uint8_t* data =
+          emulator_->memory()->TranslatePhysical(start);
+      std::filesystem::path bin_path = base_output_path_;
+      bin_path += fmt::format("_{:08X}", start);
+      bin_path.replace_extension(".bin");
+      auto handle = filesystem::OpenFile(bin_path, "wb");
+      if (handle) {
+        fwrite(data, 1, length, handle);
+        fclose(handle);
+        XELOGI("trace_dump_memory_ranges: wrote {:08X}:{:08X}", start, length);
+      }
+    }
   }
 
   player_.reset();
   emulator_.reset();
   return result;
+}
+
+bool TraceDump::SaveCurrentFrame(int frame_suffix) {
+  ui::Presenter* presenter = graphics_system_->presenter();
+  ui::RawImage raw_image;
+  if (!presenter || !presenter->CaptureGuestOutput(raw_image)) {
+    return false;
+  }
+  std::filesystem::path png_path = base_output_path_;
+  if (frame_suffix >= 0) {
+    png_path += fmt::format("_{:05d}", frame_suffix);
+  }
+  png_path.replace_extension(".png");
+  auto handle = filesystem::OpenFile(png_path, "wb");
+  if (!handle) {
+    return false;
+  }
+  auto callback = [](void* context, void* data, int size) {
+    fwrite(data, 1, size, (FILE*)context);
+  };
+  stbi_write_png_to_func(callback, handle, static_cast<int>(raw_image.width),
+                         static_cast<int>(raw_image.height), 4,
+                         raw_image.data.data(),
+                         static_cast<int>(raw_image.stride));
+  fclose(handle);
+  return true;
 }
 
 }  //  namespace gpu

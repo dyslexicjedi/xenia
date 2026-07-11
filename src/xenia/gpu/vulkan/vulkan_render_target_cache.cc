@@ -34,6 +34,8 @@
 #include "xenia/gpu/xenos.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
 
+DECLARE_int32(draw_budget);
+
 DEFINE_string(
     render_target_path_vulkan, "",
     "Render target emulation path to use on Vulkan.\n"
@@ -1059,6 +1061,30 @@ bool VulkanRenderTargetCache::Resolve(const Memory& memory,
   // Nothing to copy/clear.
   if (!resolve_info.coordinate_info.width_div_8 || !resolve_info.height_div_8) {
     return true;
+  }
+
+  if (cvars::draw_budget >= 0) {
+    const draw_util::ResolveEdramInfo& resolve_log_edram_info =
+        resolve_info.IsCopyingDepth() ? resolve_info.depth_edram_info
+                                      : resolve_info.color_edram_info;
+    XELOGI(
+        "draw_budget resolve: src base_tiles {} pitch_tiles {} msaa {} "
+        "format {} is_depth {} offset {},{} size {}x{} copy_dest_base "
+        "{:08X} dest_pitch_al32 {} dest_offset {},{} clear_depth {} "
+        "clear_color {} dest_extent {:08X}+{}",
+        resolve_log_edram_info.base_tiles, resolve_log_edram_info.pitch_tiles,
+        uint32_t(resolve_log_edram_info.msaa_samples),
+        resolve_log_edram_info.format, resolve_log_edram_info.is_depth,
+        resolve_info.coordinate_info.edram_offset_x_div_8 * 8,
+        resolve_info.coordinate_info.edram_offset_y_div_8 * 8,
+        resolve_info.coordinate_info.width_div_8 * 8,
+        resolve_info.height_div_8 * 8, resolve_info.copy_dest_base,
+        resolve_info.copy_dest_coordinate_info.pitch_aligned_div_32 * 32,
+        resolve_info.copy_dest_coordinate_info.offset_x_div_8 * 8,
+        resolve_info.copy_dest_coordinate_info.offset_y_div_8 * 8,
+        resolve_info.IsClearingDepth(), resolve_info.IsClearingColor(),
+        resolve_info.copy_dest_extent_start,
+        resolve_info.copy_dest_extent_length);
   }
 
   const ui::vulkan::VulkanDevice* const vulkan_device =

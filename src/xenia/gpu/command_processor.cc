@@ -29,6 +29,12 @@
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/user_module.h"
 
+DEFINE_int32(draw_budget, -1,
+             "Debug: number of subsequent draw commands (excluding EDRAM "
+             "copies) to execute before skipping the remaining ones; -1 = "
+             "unlimited.",
+             "GPU");
+
 namespace xe {
 namespace gpu {
 
@@ -1370,7 +1376,40 @@ bool CommandProcessor::ExecutePacketType3Draw(RingBuffer* reader,
   // we don't support yet.
   reader->AdvanceRead(count_remaining * sizeof(uint32_t));
 
-  if (draw_succeeded) {
+  bool draw_within_budget = true;
+  if (cvars::draw_budget >= 0 &&
+      register_file_->Get<reg::RB_MODECONTROL>().edram_mode !=
+          xenos::EdramMode::kCopy) {
+    if (cvars::draw_budget) {
+      --cvars::draw_budget;
+      auto rb_surface_info = register_file_->Get<reg::RB_SURFACE_INFO>();
+      auto rb_color_info = register_file_->Get<reg::RB_COLOR_INFO>();
+      auto rb_depth_info = register_file_->Get<reg::RB_DEPTH_INFO>();
+      auto pa_sc_window_offset = register_file_->Get<reg::PA_SC_WINDOW_OFFSET>();
+      XELOGI(
+          "draw_budget: {} remaining after this draw: prim {} indices {} "
+          "surface_pitch {} msaa {} color_base {} color_format {} "
+          "depth_base {} depth_format {} depthcontrol {:08X} colormask {:08X} "
+          "blend0 {:08X} window_offset {},{} vs {:016X} ps {:016X}",
+          cvars::draw_budget, uint32_t(vgt_draw_initiator.prim_type),
+          vgt_draw_initiator.num_indices, rb_surface_info.surface_pitch,
+          uint32_t(rb_surface_info.msaa_samples), rb_color_info.color_base,
+          uint32_t(rb_color_info.color_format), rb_depth_info.depth_base,
+          uint32_t(rb_depth_info.depth_format),
+          register_file_->Get<reg::RB_DEPTHCONTROL>().value,
+          register_file_->values[XE_GPU_REG_RB_COLOR_MASK],
+          register_file_->values[XE_GPU_REG_RB_BLENDCONTROL0],
+          pa_sc_window_offset.window_x_offset,
+          pa_sc_window_offset.window_y_offset,
+          active_vertex_shader() ? active_vertex_shader()->ucode_data_hash()
+                                 : 0,
+          active_pixel_shader() ? active_pixel_shader()->ucode_data_hash() : 0);
+    } else {
+      draw_within_budget = false;
+    }
+  }
+
+  if (draw_succeeded && draw_within_budget) {
     auto viz_query = register_file_->Get<reg::PA_SC_VIZ_QUERY>();
     if (!(viz_query.viz_query_ena && viz_query.kill_pix_post_hi_z)) {
       // TODO(Triang3l): Don't drop the draw call completely if the vertex

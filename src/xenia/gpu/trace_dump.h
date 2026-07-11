@@ -47,6 +47,7 @@ class TraceDump {
   bool Setup();
   bool Load(const std::filesystem::path& trace_file_path);
   int Run();
+  bool SaveCurrentFrame(int frame_suffix);
 
   std::filesystem::path trace_file_path_;
   std::filesystem::path base_output_path_;

@@ -156,14 +156,12 @@ void A64CodeCache::PlaceGuestCode(uint32_t guest_address, void* machine_code,
     xe::memory::SetJitThreadWriteAccess(false);
   }
 
-  // Now that everything is ready, fix up the indirection table.
-  // Note that we do support code that doesn't have an indirection fixup, so
-  // ignore those when we see them.
-  if (guest_address && indirection_table_base_) {
-    uint64_t* slot =
-        reinterpret_cast<uint64_t*>(indirection_slot(guest_address));
-    *slot = reinterpret_cast<uint64_t>(code_address);
-  }
+  // The indirection table slot is NOT written here: the code copied above
+  // still has pending label relocations (resolved by the emitter's ready()
+  // after placement) and hasn't been instruction-cache flushed. Publishing the
+  // slot now would let other guest threads branch into unrelocated / stale
+  // code. A64Assembler::Assemble installs the indirection after the emitter
+  // has relocated and flushed the code.
 }
 
 uintptr_t A64CodeCache::PlaceData(const void* data, size_t length) {

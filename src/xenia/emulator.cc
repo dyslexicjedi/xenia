@@ -24,6 +24,7 @@
 #include "xenia/base/literals.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/mapped_memory.h"
+#include "xenia/base/memory.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
 #include "xenia/cpu/backend/code_cache.h"
@@ -631,7 +632,22 @@ bool Emulator::ExceptionCallback(Exception* ex) {
     uint32_t scan_end = std::min(sp_region.base_address + sp_region.region_size,
                                  sp + 0x1000);
     XELOGE("Guest stack scan (r1 = {:08X}):", sp);
+    // The guest page table may include pages that are inaccessible on the host
+    // (e.g. the no-access guard region above a thread stack) in the committed
+    // region - probe the host protection at every host page crossed so the
+    // dump itself can't fault.
+    uint32_t host_page_mask = uint32_t(xe::memory::page_size()) - 1;
     for (uint32_t addr = sp; addr + 4 <= scan_end; addr += 4) {
+      if (addr == sp || !(addr & host_page_mask)) {
+        size_t protect_length = 0;
+        xe::memory::PageAccess protect_access =
+            xe::memory::PageAccess::kNoAccess;
+        if (!xe::memory::QueryProtect(memory()->TranslateVirtual(addr),
+                                      protect_length, protect_access) ||
+            protect_access == xe::memory::PageAccess::kNoAccess) {
+          break;
+        }
+      }
       uint32_t value =
           xe::load_and_swap<uint32_t>(memory()->TranslateVirtual(addr));
       // Only XEX image ranges can hold return addresses.

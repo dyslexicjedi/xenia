@@ -107,6 +107,11 @@ project("xenia-app")
       "xcb",
       "X11-xcb",
     })
+
+  filter("platforms:Mac")
+    links({
+      "xenia-hid-winkey",
+    })
   filter({})
   sdl2_link()
 

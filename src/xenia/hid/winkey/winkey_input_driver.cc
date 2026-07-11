@@ -10,7 +10,11 @@
 #include "xenia/hid/winkey/winkey_input_driver.h"
 
 #include "xenia/base/logging.h"
+#include "xenia/base/math.h"
+#include "xenia/base/platform.h"
+#if XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"
+#endif
 #include "xenia/hid/hid_flags.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/ui/virtual_key.h"
@@ -29,6 +33,7 @@ namespace xe {
 namespace hid {
 namespace winkey {
 
+#if XE_PLATFORM_WIN32
 bool __inline IsKeyToggled(uint8_t key) {
   return (GetKeyState(key) & 0x1) == 0x1;
 }
@@ -39,6 +44,25 @@ bool __inline IsKeyDown(uint8_t key) {
 
 bool __inline IsKeyDown(ui::VirtualKey virtual_key) {
   return IsKeyDown(static_cast<uint8_t>(virtual_key));
+}
+#endif  // XE_PLATFORM_WIN32
+
+bool WinKeyInputDriver::IsBindingKeyDown(ui::VirtualKey key) const {
+#if XE_PLATFORM_WIN32
+  return IsKeyDown(key);
+#else
+  auto key_index = static_cast<size_t>(key);
+  return key_index < xe::countof(key_down_) && key_down_[key_index];
+#endif
+}
+
+bool WinKeyInputDriver::IsCapitalActive() const {
+#if XE_PLATFORM_WIN32
+  return IsKeyToggled(VK_CAPITAL) || IsKeyDown(VK_SHIFT);
+#else
+  // No caps lock toggle state without a polling API; shift alone decides.
+  return IsBindingKeyDown(ui::VirtualKey::kShift);
+#endif
 }
 
 void WinKeyInputDriver::ParseKeyBinding(ui::VirtualKey output_key,
@@ -138,11 +162,11 @@ X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
   int16_t thumb_ry = 0;
 
   if (window()->HasFocus() && is_active()) {
-    bool capital = IsKeyToggled(VK_CAPITAL) || IsKeyDown(VK_SHIFT);
+    bool capital = IsCapitalActive();
     for (const KeyBinding& b : key_bindings_) {
       if (((b.lowercase == b.uppercase) || (b.lowercase && !capital) ||
            (b.uppercase && capital)) &&
-          IsKeyDown(b.input_key)) {
+          IsBindingKeyDown(b.input_key)) {
         switch (b.output_key) {
           case ui::VirtualKey::kXInputPadA:
             buttons |= 0x1000;  // XINPUT_GAMEPAD_A
@@ -216,6 +240,8 @@ X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
           case ui::VirtualKey::kXInputPadRThumbLeft:
             thumb_rx += SHRT_MIN;
             break;
+          default:
+            break;
         }
       }
     }
@@ -271,7 +297,7 @@ X_RESULT WinKeyInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
     key_events_.pop();
   }
 
-  bool capital = IsKeyToggled(VK_CAPITAL) || IsKeyDown(VK_SHIFT);
+  bool capital = IsCapitalActive();
   for (const KeyBinding& b : key_bindings_) {
     if (b.input_key == evt.virtual_key &&
         ((b.lowercase == b.uppercase) || (b.lowercase && !capital) ||
@@ -315,6 +341,15 @@ void WinKeyInputDriver::WinKeyWindowInputListener::OnKeyUp(ui::KeyEvent& e) {
 }
 
 void WinKeyInputDriver::OnKey(ui::KeyEvent& e, bool is_down) {
+#if !XE_PLATFORM_WIN32
+  // Track key state regardless of active state so GetState polling sees a
+  // current picture when the driver becomes active again.
+  auto key_index = static_cast<size_t>(e.virtual_key());
+  if (key_index < xe::countof(key_down_)) {
+    key_down_[key_index] = is_down;
+  }
+#endif
+
   if (!is_active()) {
     return;
   }

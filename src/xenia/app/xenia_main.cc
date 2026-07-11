@@ -55,8 +55,10 @@
 #if !XE_PLATFORM_ANDROID
 #include "xenia/hid/sdl/sdl_hid.h"
 #endif  // !XE_PLATFORM_ANDROID
-#if XE_PLATFORM_WIN32
+#if XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
 #include "xenia/hid/winkey/winkey_hid.h"
+#endif  // XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
+#if XE_PLATFORM_WIN32
 #include "xenia/hid/xinput/xinput_hid.h"
 #endif  // XE_PLATFORM_WIN32
 
@@ -388,10 +390,10 @@ std::vector<std::unique_ptr<hid::InputDriver>> EmulatorApp::CreateInputDrivers(
 #if !XE_PLATFORM_ANDROID
     factory.Add("sdl", xe::hid::sdl::Create);
 #endif  // !XE_PLATFORM_ANDROID
-#if XE_PLATFORM_WIN32
+#if XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
     // WinKey input driver should always be the last input driver added!
     factory.Add("winkey", xe::hid::winkey::Create);
-#endif  // XE_PLATFORM_WIN32
+#endif  // XE_PLATFORM_WIN32 || XE_PLATFORM_MAC
     for (auto& driver : factory.CreateAll(cvars::hid, window,
                                           EmulatorWindow::kZOrderHidInput)) {
       if (XSUCCEEDED(driver->Setup())) {

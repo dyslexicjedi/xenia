@@ -320,6 +320,7 @@ workspace("xenia")
   include("src/xenia/cpu")
   if os.istarget("macosx") then
     include("src/xenia/cpu/backend/a64")
+    include("src/xenia/hid/winkey")
   end
   include("src/xenia/cpu/backend/x64")
   include("src/xenia/debug/ui")

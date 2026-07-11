@@ -13,6 +13,7 @@
 #include <queue>
 
 #include "xenia/base/mutex.h"
+#include "xenia/base/platform.h"
 #include "xenia/hid/input_driver.h"
 #include "xenia/ui/virtual_key.h"
 
@@ -67,11 +68,21 @@ class WinKeyInputDriver final : public InputDriver {
 
   void OnKey(ui::KeyEvent& e, bool is_down);
 
+  bool IsBindingKeyDown(ui::VirtualKey key) const;
+  bool IsCapitalActive() const;
+
   WinKeyWindowInputListener window_input_listener_;
 
   xe::global_critical_region global_critical_region_;
   std::queue<KeyEvent> key_events_;
   std::vector<KeyBinding> key_bindings_;
+
+#if !XE_PLATFORM_WIN32
+  // Key state tracked from window key events - there is no async key state
+  // polling API outside Windows. A key released while the window is unfocused
+  // stays down until its next transition in focus.
+  bool key_down_[256] = {};
+#endif
 
   uint32_t packet_number_ = 1;
 };

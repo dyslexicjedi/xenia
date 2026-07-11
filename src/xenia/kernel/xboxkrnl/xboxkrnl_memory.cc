@@ -7,14 +7,20 @@
  ******************************************************************************
  */
 
+#include <algorithm>
 #include <cstring>
+#include <vector>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/base/string_buffer.h"
+#include "xenia/cpu/ppc/ppc_opcode_info.h"
+#include "xenia/cpu/processor.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
+#include "xenia/kernel/xthread.h"
 #include "xenia/xbox.h"
 
 namespace xe {
@@ -161,6 +167,85 @@ dword_result_t NtAllocateVirtualMemory_entry(lpdword_t base_addr_ptr,
   }
   if (!address) {
     // Failed - assume no memory available.
+    auto context = XThread::GetCurrentThread()->thread_state()->context();
+    uint32_t lr = uint32_t(context->lr);
+    XELOGE(
+        "NtAllocateVirtualMemory failed: base={:08X} size={:08X} (adjusted "
+        "{:08X}) alloc_type={:08X} protect={:08X} guest LR={:08X}",
+        uint32_t(*base_addr_ptr), uint32_t(*region_size_ptr), adjusted_size,
+        uint32_t(alloc_type), uint32_t(protect_bits), lr);
+    // Nonvolatile registers still hold the callers' values — dump everything.
+    XELOGE("Registers at failed allocation:");
+    for (int i = 0; i < 32; i++) {
+      XELOGE(" r{:<3} = {:016X}", i, context->r[i]);
+    }
+    // Scan the guest stack for return addresses, then disassemble the caller
+    // chain so the size computation can be read straight out of the log
+    // ('*' marks a return address).
+    auto processor = kernel_state()->processor();
+    std::vector<cpu::Function*> chain;
+    auto add_to_chain = [&chain](cpu::Function* function) {
+      if (chain.size() < 12 &&
+          std::find(chain.begin(), chain.end(), function) == chain.end()) {
+        chain.push_back(function);
+      }
+    };
+    auto lr_functions = processor->FindFunctionsWithAddress(lr);
+    if (!lr_functions.empty()) {
+      add_to_chain(lr_functions[0]);
+    }
+    // Exact backtrace: `stwu r1, -N(r1)` keeps a backchain at 0(r1) and the
+    // XDK ABI saves LR 8 bytes below each frame owner's entry r1.
+    uint32_t sp = uint32_t(context->r[1]) & ~3u;
+    auto sp_heap = kernel_memory()->LookupHeap(sp);
+    HeapAllocationInfo sp_region = {};
+    if (sp_heap && sp_heap->QueryRegionInfo(sp, &sp_region) &&
+        (sp_region.state & kMemoryAllocationCommit)) {
+      uint32_t stack_end = sp_region.base_address + sp_region.region_size;
+      XELOGE("Guest backtrace (r1 = {:08X}):", sp);
+      uint32_t frame = sp;
+      for (int depth = 0; depth < 24; ++depth) {
+        uint32_t next =
+            xe::load_and_swap<uint32_t>(kernel_memory()->TranslateVirtual(frame));
+        if (next <= frame || next + 8 > stack_end || (next & 7)) {
+          break;
+        }
+        uint32_t ra = xe::load_and_swap<uint32_t>(
+            kernel_memory()->TranslateVirtual(next - 8));
+        if (ra >= 0x80000000 && ra < 0xA0000000) {
+          auto functions = processor->FindFunctionsWithAddress(ra);
+          if (!functions.empty()) {
+            XELOGE(" frame r1={:08X} ra={:08X} = +0x{:X} in fn at {:08X}", next,
+                   ra, ra - functions[0]->address(), functions[0]->address());
+            add_to_chain(functions[0]);
+          } else {
+            XELOGE(" frame r1={:08X} ra={:08X} (function not compiled)", next,
+                   ra);
+          }
+        } else {
+          XELOGE(" frame r1={:08X} ra={:08X} (not code)", next, ra);
+        }
+        frame = next;
+      }
+    }
+    for (auto function : chain) {
+      uint32_t disasm_start = function->address();
+      uint32_t disasm_end = function->has_end_address()
+                                ? function->end_address() + 4
+                                : disasm_start + 0x100;
+      disasm_end = std::min(disasm_end, disasm_start + 0x800);
+      StringBuffer str;
+      for (uint32_t addr = disasm_start; addr < disasm_end; addr += 4) {
+        uint32_t code = xe::load_and_swap<uint32_t>(
+            kernel_memory()->TranslateVirtual(addr));
+        str.AppendFormat("{}{:08X} {:08X}   ", addr == lr ? "* " : "  ", addr,
+                         code);
+        cpu::ppc::DisasmPPC(addr, code, &str);
+        str.Append('\n');
+      }
+      XELOGE("Disassembly of fn at {:08X}:\n{}", disasm_start,
+             str.to_string_view());
+    }
     return X_STATUS_NO_MEMORY;
   }
 
@@ -180,7 +265,12 @@ dword_result_t NtAllocateVirtualMemory_entry(lpdword_t base_addr_ptr,
     }
   }
 
-  XELOGD("NtAllocateVirtualMemory = {:08X}", address);
+  XELOGI(
+      "NtAllocateVirtualMemory: in_base={:08X} size={:08X} type={:08X} "
+      "protect={:08X} -> {:08X} (LR={:08X})",
+      uint32_t(*base_addr_ptr), uint32_t(*region_size_ptr), uint32_t(alloc_type),
+      uint32_t(protect_bits), address,
+      uint32_t(XThread::GetCurrentThread()->thread_state()->context()->lr));
 
   // Stash back.
   // Maybe set X_STATUS_ALREADY_COMMITTED if MEM_COMMIT?

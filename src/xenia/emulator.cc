@@ -582,8 +582,10 @@ bool Emulator::ExceptionCallback(Exception* ex) {
   auto current_thread = kernel::XThread::GetCurrentThread();
   assert_not_null(current_thread);
 
+  // The PC may land in a host thunk or between functions (both live in the
+  // code cache but have no guest function mapping), so tolerate a null here —
+  // the host PC and fault address are still worth dumping.
   auto guest_function = code_cache->LookupFunction(ex->pc());
-  assert_not_null(guest_function);
 
   auto context = current_thread->thread_state()->context();
 
@@ -591,9 +593,19 @@ bool Emulator::ExceptionCallback(Exception* ex) {
   XELOGE("Thread ID (Host: 0x{:08X} / Guest: 0x{:08X})",
          current_thread->thread()->system_id(), current_thread->thread_id());
   XELOGE("Thread Handle: 0x{:08X}", current_thread->handle());
-  XELOGE("PC: 0x{:08X}",
-         guest_function->MapMachineCodeToGuestAddress(ex->pc()));
+  XELOGE("Exception Code: {} / Fault Address: 0x{:016X}",
+         static_cast<int>(ex->code()), ex->fault_address());
+  XELOGE("Host PC: 0x{:016X} (code cache base 0x{:016X} + 0x{:X})", ex->pc(),
+         code_base, ex->pc() - code_base);
+  if (guest_function) {
+    XELOGE("PC: 0x{:08X}",
+           guest_function->MapMachineCodeToGuestAddress(ex->pc()));
+  } else {
+    XELOGE("PC: (no guest function at host PC — thunk or padding)");
+  }
   XELOGE("Registers:");
+  XELOGE(" lr   = {:016X}", context->lr);
+  XELOGE(" ctr  = {:016X}", context->ctr);
   for (int i = 0; i < 32; i++) {
     XELOGE(" r{:<3} = {:016X}", i, context->r[i]);
   }
@@ -606,6 +618,34 @@ bool Emulator::ExceptionCallback(Exception* ex) {
     XELOGE(" v{:<3} = [0x{:08X}, 0x{:08X}, 0x{:08X}, 0x{:08X}]", i,
            context->v[i].u32[0], context->v[i].u32[1], context->v[i].u32[2],
            context->v[i].u32[3]);
+  }
+
+  // Scan the guest stack for words that fall inside already-compiled guest
+  // functions — a conservative backtrace that names callers even when LR has
+  // been clobbered.
+  uint32_t sp = static_cast<uint32_t>(context->r[1]) & ~3u;
+  auto sp_heap = memory()->LookupHeap(sp);
+  HeapAllocationInfo sp_region = {};
+  if (sp_heap && sp_heap->QueryRegionInfo(sp, &sp_region) &&
+      (sp_region.state & kMemoryAllocationCommit)) {
+    uint32_t scan_end = std::min(sp_region.base_address + sp_region.region_size,
+                                 sp + 0x1000);
+    XELOGE("Guest stack scan (r1 = {:08X}):", sp);
+    for (uint32_t addr = sp; addr + 4 <= scan_end; addr += 4) {
+      uint32_t value =
+          xe::load_and_swap<uint32_t>(memory()->TranslateVirtual(addr));
+      // Only XEX image ranges can hold return addresses.
+      if (value < 0x80000000 || value >= 0xA0000000) {
+        continue;
+      }
+      auto functions = processor()->FindFunctionsWithAddress(value);
+      if (functions.empty()) {
+        continue;
+      }
+      auto function = functions[0];
+      XELOGE(" [sp+{:04X}] {:08X} = {} + 0x{:X}", addr - sp, value,
+             function->name(), value - function->address());
+    }
   }
 
   // Display a dialog telling the user the guest has crashed.

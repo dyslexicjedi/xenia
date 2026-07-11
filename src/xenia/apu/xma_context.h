@@ -232,6 +232,11 @@ class XmaContext {
   // conversion buffer for 2 channel frame
   std::array<uint8_t, kBytesPerFrameChannel * 2> raw_frame_;
   // std::vector<uint8_t> current_frame_ = std::vector<uint8_t>(0);
+
+  // For xma_dump_on_parse_failure stall detection.
+  uint64_t debug_last_work_state_ = UINT64_MAX;
+  uint32_t debug_work_repeats_ = 0;
+  bool debug_stall_dumped_ = false;
 };
 
 }  // namespace apu

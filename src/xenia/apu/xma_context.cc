@@ -34,6 +34,14 @@ extern "C" {
 // Credits for most of this code goes to:
 // https://github.com/koolkdev/libertyv/blob/master/libav_wrapper/xma2dec.c
 
+DEFINE_bool(
+    xma_dump_on_parse_failure, false,
+    "Debug: when the XMA frame parser fails to advance within an input "
+    "buffer, write the whole input buffer to xma_ctx<id>_off<offset>.bin in "
+    "the current directory and log the full context state, for offline "
+    "analysis of the stream data the parser mis-handles.",
+    "APU");
+
 namespace xe {
 namespace apu {
 
@@ -100,6 +108,58 @@ bool XmaContext::Work() {
 
   auto context_ptr = memory()->TranslateVirtual(guest_ptr());
   XMA_CONTEXT_DATA data(context_ptr);
+  if (cvars::xma_dump_on_parse_failure) {
+    // Detect a stalled stream: the guest re-kicking the context many times
+    // with the same buffer/offset and the decode never advancing them.
+    uint64_t work_state = (uint64_t(data.input_buffer_read_offset) << 8) |
+                          (data.current_buffer << 2) |
+                          (data.input_buffer_0_valid << 1) |
+                          data.input_buffer_1_valid;
+    if (work_state == debug_last_work_state_) {
+      if (++debug_work_repeats_ == 64 && !debug_stall_dumped_) {
+        debug_stall_dumped_ = true;
+        uint8_t* in_buffer = memory()->TranslatePhysical(
+            data.current_buffer == 0 ? data.input_buffer_0_ptr
+                                     : data.input_buffer_1_ptr);
+        uint32_t in_size = (data.current_buffer == 0
+                                ? data.input_buffer_0_packet_count
+                                : data.input_buffer_1_packet_count) *
+                           kBytesPerPacket;
+        XELOGE(
+            "XmaContext {}: stalled (64 identical kicks): buffer {} offset "
+            "{} b0 valid {} ptr {:08X} packets {} b1 valid {} ptr {:08X} "
+            "packets {} loop_count {} loop_start {} loop_end {} "
+            "packets_skip {} split_frame_len {} partial {} is_stereo {} "
+            "output_rb r/w {}/{} output_valid {}",
+            id(), uint32_t(data.current_buffer),
+            uint32_t(data.input_buffer_read_offset),
+            uint32_t(data.input_buffer_0_valid),
+            uint32_t(data.input_buffer_0_ptr),
+            uint32_t(data.input_buffer_0_packet_count),
+            uint32_t(data.input_buffer_1_valid),
+            uint32_t(data.input_buffer_1_ptr),
+            uint32_t(data.input_buffer_1_packet_count),
+            uint32_t(data.loop_count), uint32_t(data.loop_start),
+            uint32_t(data.loop_end), packets_skip_, split_frame_len_,
+            split_frame_len_partial_, uint32_t(data.is_stereo),
+            uint32_t(data.output_buffer_read_offset),
+            uint32_t(data.output_buffer_write_offset),
+            uint32_t(data.output_buffer_valid));
+        auto dump_path = fmt::format("xma_stall_ctx{}_off{}.bin", id(),
+                                     uint32_t(data.input_buffer_read_offset));
+        FILE* dump_file = fopen(dump_path.c_str(), "wb");
+        if (dump_file && in_buffer && in_size) {
+          fwrite(in_buffer, 1, in_size, dump_file);
+          fclose(dump_file);
+          XELOGE("XmaContext {}: wrote stalled input buffer ({} bytes) to {}",
+                 id(), in_size, dump_path);
+        }
+      }
+    } else {
+      debug_last_work_state_ = work_state;
+      debug_work_repeats_ = 0;
+    }
+  }
   Decode(&data);
   data.Store(context_ptr);
   return true;
@@ -681,6 +741,37 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
             "XmaContext {}: decode offset not advancing ({} -> {}), dropping "
             "input buffer",
             id(), uint32_t(data->input_buffer_read_offset), offset);
+        if (cvars::xma_dump_on_parse_failure) {
+          XELOGE(
+              "XmaContext {}: parse failure state: current_buffer {} "
+              "buffer_0 valid {} ptr {:08X} packets {} buffer_1 valid {} ptr "
+              "{:08X} packets {} loop_count {} loop_start {} loop_end {} "
+              "packet_idx {} frame_idx {} frame_count {} "
+              "packets_skip {} split_frame_len {} is_stereo {} sample_rate "
+              "{} output_rb r/w {}/{}",
+              id(), uint32_t(data->current_buffer),
+              uint32_t(data->input_buffer_0_valid),
+              uint32_t(data->input_buffer_0_ptr),
+              uint32_t(data->input_buffer_0_packet_count),
+              uint32_t(data->input_buffer_1_valid),
+              uint32_t(data->input_buffer_1_ptr),
+              uint32_t(data->input_buffer_1_packet_count),
+              uint32_t(data->loop_count), uint32_t(data->loop_start),
+              uint32_t(data->loop_end), packet_idx,
+              frame_idx, frame_count, packets_skip_, split_frame_len_,
+              uint32_t(data->is_stereo), uint32_t(data->sample_rate),
+              output_rb.read_offset(), output_rb.write_offset());
+          auto dump_path =
+              fmt::format("xma_ctx{}_off{}.bin", id(),
+                          uint32_t(data->input_buffer_read_offset));
+          FILE* dump_file = fopen(dump_path.c_str(), "wb");
+          if (dump_file) {
+            fwrite(current_input_buffer, 1, current_input_size, dump_file);
+            fclose(dump_file);
+            XELOGE("XmaContext {}: wrote input buffer ({} bytes) to {}", id(),
+                   current_input_size, dump_path);
+          }
+        }
         if (!reuse_input_buffer) {
           SwapInputBuffer(data);
         }
@@ -818,6 +909,20 @@ std::tuple<int, bool> XmaContext::GetPacketFrameCount(uint8_t* packet) {
   int frame_count = 0;
 
   while (true) {
+    if (!stream.BitsRemaining()) {
+      // A frame ended exactly at the end of this packet with the
+      // more-frames-follow bit set. The next frame has no bits in this packet
+      // at all - unlike a frame actually split across the packet boundary, it
+      // fully begins in a following packet and is counted by that packet's
+      // header, so it's neither part of this packet's frame count nor a split
+      // frame. (Otherwise, after the last full frame, the phantom frame
+      // prevents the decode loop from taking its advance-to-the-next-packet
+      // path, and it rewinds to the first frame of this packet forever -
+      // stalling the stream, which some games, such as 4D5307D5, react to
+      // with a rapid repeating-audio loop or an infinite wait during
+      // loading.)
+      return {frame_count, false};
+    }
     frame_count++;
     if (stream.BitsRemaining() < 15) {
       return {frame_count, true};

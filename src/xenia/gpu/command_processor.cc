@@ -34,6 +34,10 @@ DEFINE_int32(draw_budget, -1,
              "copies) to execute before skipping the remaining ones; -1 = "
              "unlimited.",
              "GPU");
+DEFINE_int32(draw_skip, 0,
+             "Debug: number of subsequent draw commands (excluding EDRAM "
+             "copies) to skip before draw_budget starts counting; 0 = none.",
+             "GPU");
 
 namespace xe {
 namespace gpu {
@@ -1377,9 +1381,14 @@ bool CommandProcessor::ExecutePacketType3Draw(RingBuffer* reader,
   reader->AdvanceRead(count_remaining * sizeof(uint32_t));
 
   bool draw_within_budget = true;
-  if (cvars::draw_budget >= 0 &&
+  if (cvars::draw_skip > 0 &&
       register_file_->Get<reg::RB_MODECONTROL>().edram_mode !=
           xenos::EdramMode::kCopy) {
+    --cvars::draw_skip;
+    draw_within_budget = false;
+  } else if (cvars::draw_budget >= 0 &&
+             register_file_->Get<reg::RB_MODECONTROL>().edram_mode !=
+                 xenos::EdramMode::kCopy) {
     if (cvars::draw_budget) {
       --cvars::draw_budget;
       auto rb_surface_info = register_file_->Get<reg::RB_SURFACE_INFO>();

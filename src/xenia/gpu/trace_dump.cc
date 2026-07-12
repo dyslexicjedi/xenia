@@ -49,7 +49,12 @@ DEFINE_string(trace_dump_memory_ranges, "",
               "write to <output>_<start>.bin after playback, e.g. "
               "\"137A0000:500000,12D97000:398000\".",
               "GPU");
+DEFINE_int32(trace_dump_final_frame_draw_skip, 0,
+             "Debug: value to set the draw_skip cvar to right before "
+             "replaying the captured frame.",
+             "GPU");
 DECLARE_int32(draw_budget);
+DECLARE_int32(draw_skip);
 
 namespace xe {
 namespace gpu {
@@ -168,6 +173,9 @@ int TraceDump::Run() {
 
   if (cvars::trace_dump_final_frame_draw_budget >= 0) {
     cvars::draw_budget = cvars::trace_dump_final_frame_draw_budget;
+  }
+  if (cvars::trace_dump_final_frame_draw_skip > 0) {
+    cvars::draw_skip = cvars::trace_dump_final_frame_draw_skip;
   }
 
   BeginHostCapture();

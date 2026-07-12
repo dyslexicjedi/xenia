@@ -30,7 +30,13 @@ bool VulkanPrimitiveProcessor::Initialize() {
       command_processor_.GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Properties& device_properties =
       vulkan_device->properties();
+  // Metal (via MoltenVK) can't disable primitive restart for strip topologies
+  // (vkCreateGraphicsPipelines warns VK_ERROR_FEATURE_NOT_PRESENT "Metal does
+  // not support disabling primitive restart" and force-enables it) - strip
+  // index buffers using the host reset value as a real vertex index need
+  // conversion in the primitive processor.
   if (!InitializeCommon(
+          device_properties.driverID != VK_DRIVER_ID_MOLTENVK,
           device_properties.fullDrawIndexUint32, device_properties.triangleFans,
           false, device_properties.geometryShader,
           device_properties.geometryShader, device_properties.geometryShader)) {

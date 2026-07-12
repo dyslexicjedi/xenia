@@ -28,7 +28,7 @@ namespace d3d12 {
 D3D12PrimitiveProcessor::~D3D12PrimitiveProcessor() { Shutdown(true); }
 
 bool D3D12PrimitiveProcessor::Initialize() {
-  if (!InitializeCommon(true, false, false, true, true, true)) {
+  if (!InitializeCommon(true, true, false, false, true, true, true)) {
     Shutdown();
     return false;
   }

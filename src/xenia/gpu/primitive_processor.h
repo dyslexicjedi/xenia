@@ -216,6 +216,15 @@ class PrimitiveProcessor {
         shared_memory_(shared_memory) {}
 
   // Call from the backend-specific initialization function.
+  // - host_primitive_reset_can_be_disabled:
+  //   - Pass false if the host always performs primitive restart for strip
+  //     (and fan) topologies regardless of the pipeline state (Metal, via
+  //     MoltenVK). In this case, guest strip index buffers drawn with
+  //     primitive reset disabled, but containing the host reset value (0xFFFF
+  //     for 16-bit indices, 0xFFFFFFFF for 32-bit) as a real vertex index,
+  //     will be converted so the host doesn't split the primitive there
+  //     (16-bit buffers are widened to 32-bit, 32-bit buffers have such
+  //     elements masked to the low 24 bits actually used by the guest).
   // - full_32bit_vertex_indices_supported:
   //   - If the backend supports 32-bit indices unconditionally, and doesn't
   //     generate indirection logic in vertex shaders, pass hard-coded `true`.
@@ -253,7 +262,8 @@ class PrimitiveProcessor {
   //     emulation. Overrides do not apply to these as hosts are not required to
   //     support the fallback paths since they require different vertex shader
   //     structure (for the fallback HostVertexShaderTypes).
-  bool InitializeCommon(bool full_32bit_vertex_indices_supported,
+  bool InitializeCommon(bool host_primitive_reset_can_be_disabled,
+                        bool full_32bit_vertex_indices_supported,
                         bool triangle_fans_supported, bool line_loops_supported,
                         bool quad_lists_supported,
                         bool point_sprites_supported_without_vs_expansion,
@@ -401,6 +411,24 @@ class PrimitiveProcessor {
   static void ReplaceResetIndex16To16(uint16_t* dest, const uint16_t* source,
                                       uint32_t count,
                                       uint16_t reset_index_guest_endian);
+  // For hosts that can't disable primitive restart (Metal): widens 16-bit
+  // indices of a strip drawn with primitive reset disabled to 32-bit, so a
+  // real 0xFFFF vertex index becomes 0x0000FFFF and isn't treated as the
+  // restart marker by the host. The elements are zero-extended without endian
+  // normalization (like ReplaceResetIndex16To24), the guest endian remains in
+  // effect for the vertex shader.
+  static void LogUnintendedResetConversion(uint32_t guest_base, uint32_t count,
+                                           bool is_32bit);
+  static void WidenIndices16To32(uint32_t* dest, const uint16_t* source,
+                                 uint32_t count);
+  // For hosts that can't disable primitive restart (Metal): masks 0xFFFFFFFF
+  // elements of a 32-bit strip index buffer drawn with primitive reset
+  // disabled to the low 24 bits actually used by the guest (in guest endian),
+  // so they aren't treated as the restart marker by the host. All other
+  // elements are kept unchanged.
+  static void MaskUnintendedReset32(uint32_t* dest, const uint32_t* source,
+                                    uint32_t count,
+                                    uint32_t low_bits_mask_guest_endian);
   // For use when the reset index is not 0xFFFF, and 0xFFFF is also used as a
   // valid index - keeps 0xFFFF as a real index and replaces the reset index
   // with 0xFFFFFFFF instead.
@@ -696,6 +724,7 @@ class PrimitiveProcessor {
   SharedMemory& shared_memory_;
 
   bool full_32bit_vertex_indices_used_ = false;
+  bool host_primitive_reset_can_be_disabled_ = true;
   bool convert_triangle_fans_to_lists_ = false;
   bool convert_line_loops_to_strips_ = false;
   bool convert_quad_lists_to_triangle_lists_ = false;

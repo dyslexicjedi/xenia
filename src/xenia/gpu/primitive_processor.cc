@@ -106,10 +106,12 @@ namespace gpu {
 PrimitiveProcessor::~PrimitiveProcessor() { ShutdownCommon(); }
 
 bool PrimitiveProcessor::InitializeCommon(
+    bool host_primitive_reset_can_be_disabled,
     bool full_32bit_vertex_indices_supported, bool triangle_fans_supported,
     bool line_loops_supported, bool quad_lists_supported,
     bool point_sprites_supported_without_vs_expansion,
     bool rectangle_lists_supported_without_vs_expansion) {
+  host_primitive_reset_can_be_disabled_ = host_primitive_reset_can_be_disabled;
   full_32bit_vertex_indices_used_ = full_32bit_vertex_indices_supported;
   convert_triangle_fans_to_lists_ =
       !triangle_fans_supported || cvars::force_convert_triangle_fans_to_lists;
@@ -958,6 +960,80 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
             cache_transaction.SetNewResult(cacheable);
           }
         }
+      } else if (!host_primitive_reset_can_be_disabled_ &&
+                 (host_primitive_type == xenos::PrimitiveType::kLineStrip ||
+                  host_primitive_type == xenos::PrimitiveType::kTriangleStrip ||
+                  host_primitive_type == xenos::PrimitiveType::kTriangleFan)) {
+        // The host (Metal, via MoltenVK) performs primitive restart for strip
+        // topologies unconditionally. If the host reset value (0xFFFF for
+        // 16-bit indices, 0xFFFFFFFF for 32-bit) is used as a real vertex
+        // index in this strip drawn with primitive reset disabled, the host
+        // would incorrectly split the strip there, dropping primitives - the
+        // index buffer must be rewritten so it doesn't contain the host reset
+        // value.
+        // Writing to the trace irrespective of the cache lookup result because
+        // cache behavior depends on runtime configuration and state.
+        trace_writer_.WriteMemoryRead(guest_index_base,
+                                      guest_index_buffer_needed_bytes);
+        // Not specifying the primitive type in the cache key because the
+        // transformation is index-data-only, in a type-independent way.
+        CacheTransaction cache_transaction(
+            *this, CacheKey(guest_index_base, guest_draw_vertex_count,
+                            guest_index_format, guest_index_endian,
+                            guest_primitive_reset_enabled));
+        if (cache_transaction.GetFoundResult()) {
+          cacheable = *cache_transaction.GetFoundResult();
+        } else {
+          if (guest_index_format == xenos::IndexFormat::kInt16) {
+            auto guest_indices =
+                memory_.TranslatePhysical<const uint16_t*>(guest_index_base);
+            if (IsResetUsed(guest_indices, guest_draw_vertex_count,
+                            UINT16_MAX)) {
+              // 0xFFFF is a real vertex index in this strip - widen to 32-bit
+              // so it becomes 0x0000FFFF, which is not the host reset value.
+              cacheable.index_buffer_type =
+                  ProcessedIndexBufferType::kHostConverted;
+              cacheable.host_index_format = xenos::IndexFormat::kInt32;
+              auto host_indices = reinterpret_cast<uint32_t*>(
+                  RequestHostConvertedIndexBufferForCurrentFrame(
+                      xenos::IndexFormat::kInt32, guest_draw_vertex_count,
+                      false, guest_index_base,
+                      cacheable.host_index_buffer_handle));
+              if (!host_indices) {
+                return false;
+              }
+              WidenIndices16To32(host_indices, guest_indices,
+                                 guest_draw_vertex_count);
+              LogUnintendedResetConversion(guest_index_base,
+                                           guest_draw_vertex_count, false);
+            }
+          } else {
+            auto guest_indices =
+                memory_.TranslatePhysical<const uint32_t*>(guest_index_base);
+            if (IsResetUsed(guest_indices, guest_draw_vertex_count, UINT32_MAX,
+                            UINT32_MAX)) {
+              // 0xFFFFFFFF is a real vertex index in this strip (the guest
+              // only uses the low 24 bits of it) - mask such elements to the
+              // guest index mask so they're not the host reset value anymore.
+              cacheable.index_buffer_type =
+                  ProcessedIndexBufferType::kHostConverted;
+              auto host_indices = reinterpret_cast<uint32_t*>(
+                  RequestHostConvertedIndexBufferForCurrentFrame(
+                      xenos::IndexFormat::kInt32, guest_draw_vertex_count,
+                      false, guest_index_base,
+                      cacheable.host_index_buffer_handle));
+              if (!host_indices) {
+                return false;
+              }
+              MaskUnintendedReset32(host_indices, guest_indices,
+                                    guest_draw_vertex_count,
+                                    guest_index_mask_guest_endian);
+              LogUnintendedResetConversion(guest_index_base,
+                                           guest_draw_vertex_count, true);
+            }
+          }
+          cache_transaction.SetNewResult(cacheable);
+        }
       }
     }
   }
@@ -1266,6 +1342,56 @@ void PrimitiveProcessor::ReplaceResetIndex16To24(
   while (count--) {
     uint16_t index = *(source++);
     *(dest++) = index != reset_index_guest_endian ? index : UINT32_MAX;
+  }
+}
+
+void PrimitiveProcessor::LogUnintendedResetConversion(uint32_t guest_base,
+                                                      uint32_t count,
+                                                      bool is_32bit) {
+  // The same buffer is reconverted every frame (the conversion cache is
+  // per-frame) - cap the logging.
+  static constexpr uint32_t kMaxLogs = 32;
+  static uint32_t logged_count = 0;
+  if (logged_count > kMaxLogs) {
+    return;
+  }
+  if (logged_count++ == kMaxLogs) {
+    XELOGGPU(
+        "Primitive processor: further strip index buffer conversions for the "
+        "host with always-enabled primitive restart will not be logged");
+    return;
+  }
+  XELOGGPU(
+      "Primitive processor: strip index buffer at 0x{:08X} ({} {}-bit indices, "
+      "primitive reset disabled by the guest) uses the host primitive restart "
+      "value as a real vertex index - {} for the host with always-enabled "
+      "primitive restart",
+      guest_base, count, is_32bit ? 32 : 16,
+      is_32bit ? "masked 0xFFFFFFFF elements to the low 24 bits"
+               : "widened to 32-bit");
+}
+
+void PrimitiveProcessor::WidenIndices16To32(uint32_t* dest,
+                                            const uint16_t* source,
+                                            uint32_t count) {
+  // Rarely needed (only for strips actually using 0xFFFF as a vertex index on
+  // hosts that can't disable primitive restart), and the result is cached
+  // within the frame - scalar is enough.
+  while (count--) {
+    *(dest++) = *(source++);
+  }
+}
+
+void PrimitiveProcessor::MaskUnintendedReset32(
+    uint32_t* dest, const uint32_t* source, uint32_t count,
+    uint32_t low_bits_mask_guest_endian) {
+  // Rarely needed (only for strips actually using 0xFFFFFFFF as a vertex index
+  // on hosts that can't disable primitive restart), and the result is cached
+  // within the frame - scalar is enough.
+  while (count--) {
+    uint32_t index = *(source++);
+    *(dest++) =
+        index == UINT32_MAX ? (index & low_bits_mask_guest_endian) : index;
   }
 }
 

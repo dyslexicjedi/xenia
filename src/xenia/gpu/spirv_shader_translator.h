@@ -889,6 +889,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
   // Otherwise, framebuffer color attachment outputs.
   std::array<spv::Id, xenos::kMaxColorRenderTargets>
       output_or_var_fragment_data_;
+  // Without fragment shader interlock, when the guest pixel shader exports
+  // depth (oDepth) - gl_FragDepth.
+  spv::Id output_fragment_depth_;
 
   std::vector<spv::Id> main_interface_;
   spv::Function* function_main_;
@@ -944,6 +947,11 @@ class SpirvShaderTranslator : public ShaderTranslator {
   spv::Block* rect_vertex_loop_merge_;
   // PS, only when needed - bool.
   spv::Id var_main_kill_pixel_;
+  // PS, only when the guest pixel shader exports depth (oDepth) - float.
+  // Consumed by the late fragment shader interlock depth / stencil test, or,
+  // without fragment shader interlock, exported to gl_FragDepth in the end of
+  // the shader.
+  spv::Id var_main_depth_;
   // PS, only when writing to color render targets with fragment shader
   // interlock - uint.
   // Whether color buffers have been written to, if not written on the taken

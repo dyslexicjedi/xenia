@@ -469,6 +469,21 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
     }
   }
 
+  if (output_fragment_depth_ != spv::NoResult) {
+    // Export the guest depth (oDepth) to gl_FragDepth. StoreResult applies the
+    // saturate modifier if the guest instruction has it, but clamp to [0, 1]
+    // unconditionally as the value replaces the fixed-function depth which is
+    // clamped on the host, and Vulkan requires gl_FragDepth to be within the
+    // depth attachment range.
+    assert_true(var_main_depth_ != spv::NoResult);
+    builder_->createStore(
+        builder_->createTriBuiltinCall(
+            type_float_, ext_inst_glsl_std_450_, GLSLstd450NClamp,
+            builder_->createLoad(var_main_depth_, spv::NoPrecision),
+            const_float_0_, const_float_1_),
+        output_fragment_depth_);
+  }
+
   uint32_t color_targets_written = current_shader().writes_color_targets();
 
   if ((color_targets_written & 0b1) && !IsExecutionModeEarlyFragmentTests()) {
@@ -1604,21 +1619,43 @@ void SpirvShaderTranslator::FSI_DepthStencilTest(
   SpirvBuilder::IfBuilder if_depth_stencil_enabled(
       depth_stencil_enabled, spv::SelectionControlDontFlattenMask, *builder_);
 
-  // Load the depth in the center of the pixel and calculate the derivatives of
-  // the depth outside non-uniform control flow.
-  assert_true(input_fragment_coordinates_ != spv::NoResult);
-  id_vector_temp_.clear();
-  id_vector_temp_.push_back(builder_->makeIntConstant(2));
-  spv::Id center_depth32_unbiased = builder_->createLoad(
-      builder_->createAccessChain(spv::StorageClassInput,
-                                  input_fragment_coordinates_, id_vector_temp_),
-      spv::NoPrecision);
-  builder_->addCapability(spv::CapabilityDerivativeControl);
+  bool shader_writes_depth =
+      !is_depth_only_fragment_shader_ && current_shader().writes_depth();
+  spv::Id center_depth32_unbiased;
   std::array<spv::Id, 2> depth_dxy;
-  depth_dxy[0] = builder_->createUnaryOp(spv::OpDPdxCoarse, type_float_,
-                                         center_depth32_unbiased);
-  depth_dxy[1] = builder_->createUnaryOp(spv::OpDPdyCoarse, type_float_,
-                                         center_depth32_unbiased);
+  if (shader_writes_depth) {
+    // The guest pixel shader exports depth (oDepth) - common to all samples,
+    // no derivatives (and thus no per-sample offsets and no slope-scaled
+    // polygon offset). Possible only in the late depth / stencil test
+    // (FSI_IsDepthStencilEarly is false for depth-writing shaders), after the
+    // guest shader has written the value. StoreResult applies the saturate
+    // modifier if the guest instruction has it, but clamp to [0, 1]
+    // unconditionally like for the interpolated depth.
+    assert_false(is_early);
+    assert_true(var_main_depth_ != spv::NoResult);
+    center_depth32_unbiased = builder_->createTriBuiltinCall(
+        type_float_, ext_inst_glsl_std_450_, GLSLstd450NClamp,
+        builder_->createLoad(var_main_depth_, spv::NoPrecision),
+        const_float_0_, const_float_1_);
+    depth_dxy[0] = const_float_0_;
+    depth_dxy[1] = const_float_0_;
+  } else {
+    // Load the depth in the center of the pixel and calculate the derivatives
+    // of the depth outside non-uniform control flow.
+    assert_true(input_fragment_coordinates_ != spv::NoResult);
+    id_vector_temp_.clear();
+    id_vector_temp_.push_back(builder_->makeIntConstant(2));
+    center_depth32_unbiased = builder_->createLoad(
+        builder_->createAccessChain(spv::StorageClassInput,
+                                    input_fragment_coordinates_,
+                                    id_vector_temp_),
+        spv::NoPrecision);
+    builder_->addCapability(spv::CapabilityDerivativeControl);
+    depth_dxy[0] = builder_->createUnaryOp(spv::OpDPdxCoarse, type_float_,
+                                           center_depth32_unbiased);
+    depth_dxy[1] = builder_->createUnaryOp(spv::OpDPdyCoarse, type_float_,
+                                           center_depth32_unbiased);
+  }
 
   // Skip everything if potentially discarded all the samples previously in the
   // shader.
@@ -1787,27 +1824,35 @@ void SpirvShaderTranslator::FSI_DepthStencilTest(
                             builder_->makeUintConstant(uint32_t(1) << 2)),
       const_uint_0_);
 
-  // Get the maximum depth slope for the polygon offset.
-  // https://docs.microsoft.com/en-us/windows/desktop/direct3d9/depth-bias
-  std::array<spv::Id, 2> depth_dxy_abs;
-  for (uint32_t i = 0; i < 2; ++i) {
-    depth_dxy_abs[i] = builder_->createUnaryBuiltinCall(
-        type_float_, ext_inst_glsl_std_450_, GLSLstd450FAbs, depth_dxy[i]);
+  spv::Id center_depth32_biased;
+  if (shader_writes_depth) {
+    // No polygon offset is applied to the depth exported by the guest pixel
+    // shader (oDepth).
+    center_depth32_biased = center_depth32_unbiased;
+  } else {
+    // Get the maximum depth slope for the polygon offset.
+    // https://docs.microsoft.com/en-us/windows/desktop/direct3d9/depth-bias
+    std::array<spv::Id, 2> depth_dxy_abs;
+    for (uint32_t i = 0; i < 2; ++i) {
+      depth_dxy_abs[i] = builder_->createUnaryBuiltinCall(
+          type_float_, ext_inst_glsl_std_450_, GLSLstd450FAbs, depth_dxy[i]);
+    }
+    spv::Id depth_max_slope = builder_->createBinBuiltinCall(
+        type_float_, ext_inst_glsl_std_450_, GLSLstd450FMax, depth_dxy_abs[0],
+        depth_dxy_abs[1]);
+    // Calculate the polygon offset.
+    spv::Id slope_scaled_poly_offset = builder_->createNoContractionBinOp(
+        spv::OpFMul, type_float_, poly_offset_scale, depth_max_slope);
+    spv::Id poly_offset = builder_->createNoContractionBinOp(
+        spv::OpFAdd, type_float_, slope_scaled_poly_offset, poly_offset_offset);
+    // Apply the post-clip and post-viewport polygon offset to the fragment's
+    // depth. Not clamping yet as this is at the center, which is not
+    // necessarily covered and not necessarily inside the bounds - derivatives
+    // scaled by sample locations will be added to this value, and it must be
+    // linear.
+    center_depth32_biased = builder_->createNoContractionBinOp(
+        spv::OpFAdd, type_float_, center_depth32_unbiased, poly_offset);
   }
-  spv::Id depth_max_slope = builder_->createBinBuiltinCall(
-      type_float_, ext_inst_glsl_std_450_, GLSLstd450FMax, depth_dxy_abs[0],
-      depth_dxy_abs[1]);
-  // Calculate the polygon offset.
-  spv::Id slope_scaled_poly_offset = builder_->createNoContractionBinOp(
-      spv::OpFMul, type_float_, poly_offset_scale, depth_max_slope);
-  spv::Id poly_offset = builder_->createNoContractionBinOp(
-      spv::OpFAdd, type_float_, slope_scaled_poly_offset, poly_offset_offset);
-  // Apply the post-clip and post-viewport polygon offset to the fragment's
-  // depth. Not clamping yet as this is at the center, which is not necessarily
-  // covered and not necessarily inside the bounds - derivatives scaled by
-  // sample locations will be added to this value, and it must be linear.
-  spv::Id center_depth32_biased = builder_->createNoContractionBinOp(
-      spv::OpFAdd, type_float_, center_depth32_unbiased, poly_offset);
 
   // Perform depth and stencil testing for each covered sample.
   spv::Id new_sample_mask = main_fsi_sample_mask_;

@@ -145,6 +145,8 @@ void SpirvShaderTranslator::Reset() {
   rect_vertex_loop_continue_ = nullptr;
   rect_vertex_loop_merge_ = nullptr;
   var_main_kill_pixel_ = spv::NoResult;
+  var_main_depth_ = spv::NoResult;
+  output_fragment_depth_ = spv::NoResult;
   var_main_fsi_color_written_ = spv::NoResult;
 
   main_switch_op_.reset();
@@ -716,6 +718,12 @@ std::vector<uint8_t> SpirvShaderTranslator::CompleteTranslation() {
     if (IsExecutionModeEarlyFragmentTests()) {
       builder_->addExecutionMode(function_main_,
                                  spv::ExecutionModeEarlyFragmentTests);
+    }
+    if (output_fragment_depth_ != spv::NoResult) {
+      // The guest pixel shader exports depth (oDepth) - gl_FragDepth is
+      // written.
+      builder_->addExecutionMode(function_main_,
+                                 spv::ExecutionModeDepthReplacing);
     }
     if (edram_fragment_shader_interlock_) {
       // Accessing per-sample values, so interlocking just when there's common
@@ -2260,6 +2268,16 @@ void SpirvShaderTranslator::StartFragmentShaderBeforeMain() {
                                 spv::DecorationInvariant);
         main_interface_.push_back(output_fragment_data_rt);
       }
+      if (current_shader().writes_depth()) {
+        // Guest depth export (oDepth) without fragment shader interlock -
+        // written to gl_FragDepth in the end of the shader.
+        output_fragment_depth_ = builder_->createVariable(
+            spv::NoPrecision, spv::StorageClassOutput, type_float_,
+            "xe_out_fragment_depth");
+        builder_->addDecoration(output_fragment_depth_, spv::DecorationBuiltIn,
+                                spv::BuiltInFragDepth);
+        main_interface_.push_back(output_fragment_depth_);
+      }
     }
   }
 }
@@ -2290,6 +2308,15 @@ void SpirvShaderTranslator::StartFragmentShaderInMain() {
     // For killing with fragment shader interlock when demotion is supported,
     // using OpIsHelperInvocationEXT to avoid allocating a variable in addition
     // to the execution mask GPUs naturally have.
+  }
+
+  if (!is_depth_only_fragment_shader_ && current_shader().writes_depth()) {
+    // Guest depth export (oDepth) value - written by StoreResult, consumed by
+    // the late fragment shader interlock depth / stencil test, or exported to
+    // gl_FragDepth in the end of the shader without fragment shader interlock.
+    var_main_depth_ = builder_->createVariable(
+        spv::NoPrecision, spv::StorageClassFunction, type_float_,
+        "xe_var_depth", const_float_0_);
   }
 
   if (edram_fragment_shader_interlock_) {
@@ -2904,6 +2931,11 @@ void SpirvShaderTranslator::StoreResult(const InstructionResult& result,
                                            << result.storage_index)),
             var_main_fsi_color_written_);
       }
+    } break;
+    case InstructionStorageTarget::kDepth: {
+      assert_true(is_pixel_shader());
+      assert_true(current_shader().writes_depth());
+      target_pointer = var_main_depth_;
     } break;
     case InstructionStorageTarget::kExportAddress: {
       // spv::NoResult if memory export usage is unsupported or invalid.
